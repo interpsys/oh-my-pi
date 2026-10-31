@@ -255,6 +255,19 @@ describe("python prelude", () => {
 		]);
 	});
 
+	it("returns MCP payloads from tool calls and raises MCP errors", async () => {
+		const d = { serverName: "s", mcpToolName: "t" };
+		const results: Record<string, unknown> = {
+			j: { text: '{"a": [1]}', details: d },
+			s: { text: "ack", details: { ...d, structuredContent: { text: "c", images: ["x"] } } },
+			e: { text: "bad", details: d, hasError: true },
+		};
+		const code =
+			"async def main(): return await asyncio.gather(*(tool.read({'path': k}) for k in 'jse'), return_exceptions=True)";
+		const { stdout } = await runWithReadBridge(`${code}\nprint(asyncio.run(main()))`, {}, async a => results[a.path]);
+		expect(stdout).toBe("[{'a': [1]}, {'text': 'c', 'images': ['x']}, RuntimeError('bad')]\n");
+	});
+
 	it("bypasses discovered proxies for loopback bridge calls", async () => {
 		let proxyRequests = 0;
 		const bridge = Bun.serve({
