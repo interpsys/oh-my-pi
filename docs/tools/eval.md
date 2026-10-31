@@ -192,8 +192,10 @@ JSON-looking text. Error results can also carry structured data, so check
 `hasError` before treating a payload as a successful result.
 
 `text` remains the model-facing rendering, including any JSON echo and output
-truncation notices. Truncation does not trim `details.structuredContent`: code
-receives the complete server-supplied object even when the rendering spills. Use
+truncation notices. Truncation does not trim `details.structuredContent` or
+`details.rawContent` (the server's content blocks): code receives them complete
+even when the rendering spills, so parse a large JSON body from
+`details.rawContent[0].text`, not from `text`. Use
 server-side pagination/bounds for large data and print only the fields needed
 by the model. The object is not validated against the server's output schema or
 treated as trusted. Ordinary tools keep their existing return shapes, including
