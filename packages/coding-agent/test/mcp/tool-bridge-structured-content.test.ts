@@ -186,7 +186,7 @@ describe("MCP bridge structuredContent", () => {
 	it("keeps a spilled MCP text body exact in rawContent for eval-bridged calls only", async () => {
 		using temp = TempDir.createSync("@mcp-raw-spill-");
 		const manager = SessionManager.create(temp.path(), temp.path());
-		const body = JSON.stringify({ rows: "é🦊x".repeat(25_600) });
+		const body = JSON.stringify({ rows: "é🦊x".repeat(30_000) });
 		expect(Buffer.byteLength(body)).toBeGreaterThan(200 * 1024);
 		const tool = wrapToolWithMetaNotice(
 			CustomToolAdapter.wrap(toolFor({ content: [{ type: "text", text: body }] }), () => ({}) as CustomToolContext),
@@ -198,7 +198,8 @@ describe("MCP bridge structuredContent", () => {
 			expect(direct.rawContent).toBeUndefined();
 			const bridged = await tool.execute("bridged", {}, undefined, undefined, { ...context, evalBridge: true });
 			const value = bridgeValueFromToolResult(tool.name, {}, bridged);
-			if (typeof value !== "object") throw new Error("Expected eval details");
+			if (typeof value !== "object" || !("details" in value) || !("text" in value))
+				throw new Error("Expected eval details");
 			expect((value.details as MCPToolDetails).rawContent).toEqual([{ type: "text", text: body }]);
 			expect(Buffer.byteLength(value.text)).toBeLessThan(64 * 1024);
 		} finally {
