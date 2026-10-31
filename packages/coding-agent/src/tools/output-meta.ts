@@ -709,8 +709,10 @@ async function spillLargeResultToArtifact(
 	// `rawContent` cannot re-inflate the on-disk size: text blocks and
 	// `resource.text` are captured verbatim by the artifact, and image data
 	// survives on the result content (and eval's `images`). Resource URI/MIME/blob
-	// metadata has no other home, so it is retained.
+	// metadata has no other home, so it is retained. Eval-bridged calls keep it
+	// whole: no toolResult message retains them and their code reads it.
 	if (
+		!context?.evalBridge &&
 		typeof newDetails.serverName === "string" &&
 		typeof newDetails.mcpToolName === "string" &&
 		Array.isArray(newDetails.rawContent)
