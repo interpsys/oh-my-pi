@@ -151,7 +151,9 @@
 - Factory Droid requests size images against what each route actually sends: Gemini models count their expanded tool schemas and no longer drop images for another model's reasoning, and only Claude models count withdrawn tool definitions ([#17492](https://github.com/can1357/oh-my-pi/pull/17492))
 ### Fixed
 
-- Eval `tool.*` MCP calls keep `details.rawContent` exact when the rendering spills to an artifact, so code can parse large MCP bodies; direct tool calls still prune it from history.
+- Eval `tool.*` calls skip the shared artifact spill: code receives the full `text`, MCP `details.rawContent` and `details.structuredContent`, and no unused artifact is written (tools that bound their own output, such as `bash`, keep doing so).
+- Spilled direct MCP tool results drop `details.structuredContent` with the duplicate `rawContent` text, so a large structured payload lives only in its artifact instead of in live history.
+- `judge_batch` `status()` always carries `model` (`null` before any answer, `"mixed"` when more than one backend answered, instead of the backend of the last settled item) and `models` (answers per backend); `results()` returns `{key: {answers, model}}`.
 
 ## [18.14.0] - 2026-10-29
 
