@@ -28,8 +28,8 @@ declare module "@oh-my-pi/pi-agent-core" {
 		 *  drop line gutters. `read` then still returns image files as images
 		 *  instead of their bytes decoded as text, which Cursor rejects (#15630). */
 		rawImages?: boolean;
-		/** Set by the eval `tool.*` bridge. Bridged calls write no toolResult
-		 *  message, so a spill keeps MCP `details.rawContent` exact for the code. */
+		/** Set by the eval `tool.*` bridge. Bridged calls return into kernel memory
+		 *  and write no toolResult message, so they skip the shared artifact spill. */
 		evalBridge?: boolean;
 	}
 }

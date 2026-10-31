@@ -908,7 +908,7 @@ if "__omp_prelude_loaded__" not in globals():
             return _bridge_call("__judge_batch__", {"op": op, "id": self.id, **args})
 
         def status(self):
-            """Snapshot: ``intent``, ``done``, ``total``, ``failed``, ``running``, ``model``, ``elapsedS``."""
+            """Snapshot: ``intent``, ``done``, ``total``, ``failed``, ``running``, ``model`` (``None`` before any answer, ``"mixed"`` when several answered), ``models`` (answers per model), ``elapsedS``."""
             return self._call("status")
 
         async def drain(self, timeout=None):
@@ -932,7 +932,7 @@ if "__omp_prelude_loaded__" not in globals():
                     yield entry
 
         def results(self):
-            """``{key: answers}`` for every item judged so far."""
+            """``{key: {"answers": answers, "model": model}}`` for every item judged so far."""
             result = self._call("results")
             return result.get("results", {}) if isinstance(result, dict) else {}
 
