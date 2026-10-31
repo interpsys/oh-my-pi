@@ -867,7 +867,7 @@ describe.skipIf(!SHOULD_RUN)("python runner subprocess", () => {
 			expect(result.output).toContain("ValueError");
 			expect(result.output).toContain("boom");
 			// Traceback starts at user code; runner-internal frames stay hidden.
-			expect(result.output).toContain('File "<cell>"');
+			expect(result.output).toContain('File "<cell-');
 			expect(result.output).not.toContain("_exec_source_async");
 		} finally {
 			await kernel.shutdown();
@@ -881,10 +881,24 @@ describe.skipIf(!SHOULD_RUN)("python runner subprocess", () => {
 			const result = await executePythonWithKernel(kernel, 'echo "hi"');
 			expect(result.exitCode).toBe(1);
 			expect(result.output).toContain("SyntaxError");
-			expect(result.output).toContain('File "<cell>"');
+			expect(result.output).toContain('File "<cell-');
 			// Caret display only — no stack header, no runner machinery.
 			expect(result.output).not.toContain("Traceback (most recent call last");
 			expect(result.output).not.toContain("_compile_source");
+		} finally {
+			await kernel.shutdown();
+		}
+	});
+
+	it("serves source of cell-defined functions to inspect.getsource in later cells", async () => {
+		using tempDir = TempDir.createSync("@python-runner-getsource-");
+		const kernel = await PythonKernel.start({ cwd: tempDir.path() });
+		try {
+			await executePythonWithKernel(kernel, "def double(x):\n    return x * 2");
+			const result = await executePythonWithKernel(kernel, "import inspect\nprint(inspect.getsource(double))");
+			expect(result.exitCode).toBe(0);
+			expect(result.output).toContain("def double(x):");
+			expect(result.output).toContain("return x * 2");
 		} finally {
 			await kernel.shutdown();
 		}

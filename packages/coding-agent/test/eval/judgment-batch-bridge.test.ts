@@ -732,8 +732,14 @@ async function runPythonJudgeBatchInSubprocess(tempDir: TempDir): Promise<Python
 		"import json",
 		"again = judge_batch.attach(b.id)",
 		"rest = await again.drain(timeout=0)",
-		'print(json.dumps({"rest": rest, "status": again.status()["done"], "results": sorted(again.results())}))',
+		'waited = judge_batch({"fast": "quick tests", "slow": "slow tests"}, Q)',
+		"async def observe():",
+		"    await waited",
+		'    return waited.status()["running"]',
+		"observers = await asyncio.gather(observe(), observe())",
+		'print(json.dumps({"rest": rest, "status": again.status()["done"], "results": sorted(again.results()), "awaited": [len(waited.results()), observers]}))',
 		"again.close()",
+		"waited.close()",
 	].join("\n");
 	await Bun.write(
 		scriptPath,
@@ -761,6 +767,9 @@ vi.spyOn(ai, "completeSimple").mockImplementation(async (_model, context) => {
 		? user.content.filter((block): block is ImageContent => block.type === "image")
 		: [];
 	if (images.length > 0) observedImageBlocks.push({ prompt, images });
+	// Real delays: both subprocess awaiters must already be blocked in drain when the fast item settles.
+	if (prompt.includes("quick")) await Bun.sleep(100);
+	if (prompt.includes("slow")) await Bun.sleep(400);
 	return {
 		role: "assistant",
 		api: "openai-responses",
@@ -819,7 +828,7 @@ describe("judge_batch() Python prelude", () => {
 				single: { tests: { type: "bool", bool: 1 } },
 			});
 			expect(String(one.id)).toMatch(/^jdgb-/);
-			expect(two).toEqual({ rest: [], status: 2, results: ["a", "b"] });
+			expect(two).toEqual({ rest: [], status: 2, results: ["a", "b"], awaited: [2, [false, false]] });
 			expect(one.image_items).toEqual({
 				"1": [true, { tests: { type: "bool", bool: 1 } }],
 				"'1'": [true, { tests: { type: "bool", bool: 1 } }],

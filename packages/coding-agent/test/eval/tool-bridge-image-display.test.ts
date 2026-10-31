@@ -43,4 +43,20 @@ describe("bridged tool image display", () => {
 		expect(displays).toEqual([]);
 		expect(value).toEqual({ text: "plain", details: { lines: 3 } });
 	});
+
+	it("unwraps MCP envelopes after image surfacing and raises MCP errors", async () => {
+		const d = { serverName: "s", mcpToolName: "t" };
+		const structured = { text: "caption", images: [{ data: "x", mimeType: "image/png" }] };
+		const results: Record<string, unknown> = {
+			s: { text: "ack", details: { ...d, structuredContent: structured } },
+			j: { text: '{"a":[1]}', details: d },
+			i: { text: "shot", details: d, images: [{ mimeType: "image/png", data: PNG_BASE64 }] },
+			e: { text: "bad", details: d, hasError: true },
+		};
+		const { hooks, displays } = collect(async name => results[name]);
+		const cell =
+			"({ s: await tool.s({}), j: await tool.j({}), i: await tool.i({}), e: await tool.e({}).catch(x => x.message) })";
+		expect(await runtime.run(cell, undefined, hooks)).toEqual({ s: structured, j: { a: [1] }, i: "shot", e: "bad" });
+		expect(displays).toEqual([{ type: "image", data: PNG_BASE64, mimeType: "image/png" }]);
+	});
 });
