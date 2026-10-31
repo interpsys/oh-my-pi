@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Eval `tool.mcp__<server>_<tool>(...)` returns the MCP payload itself (`structuredContent`, else the JSON-decoded text, else the text), and an MCP error result raises instead of returning a flagged object; MCP image blocks still display
+- Python eval `b = await judge_batch(...)` waits until every item settled and returns the batch; a plain call still returns at once
+
+### Fixed
+
+- Python eval cells compile as `<cell-N>` and register their source, so `inspect.getsource` works on functions defined in earlier cells and tracebacks show the source lines
+
 ## [18.14.1] - 2026-10-31
 
 ### Added
