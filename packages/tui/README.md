@@ -495,6 +495,8 @@ const spacer = new Spacer(2); // 2 empty lines (default: 1)
 
 Renders images inline for terminals that support the Kitty graphics protocol (including Kitty, Ghostty, WezTerm, Rex, and Warp on macOS/Linux), iTerm2 inline images or SIXEL. Falls back to a text placeholder on unsupported terminals.
 
+Budgeted Kitty images use Unicode placeholders by default on verified supporting terminals, including Kitty, Ghostty, Otty, Rio, Monstar, and Rex. Their image cells scroll with the text, preserving charts in native scrollback without environment overrides. Direct placement (`PI_KITTY_PLACEHOLDERS=0`) remains an explicit opt-out and does not guarantee complete images across partial scrollback retirement. `PI_NO_KITTY_PLACEHOLDERS=1` disables placeholders even when `PI_KITTY_PLACEHOLDERS=1` is set.
+
 ```typescript
 interface ImageTheme {
 	fallbackColor: (str: string) => string;
