@@ -32,6 +32,13 @@ export const terminalLaunchProviders = {
 		},
 	},
 	orca: orcaLaunchProvider,
+	rex: {
+		capabilities: {
+			displayName: "Rex",
+			supported: false,
+			reason: "Rex launch is not implemented by this API.",
+		},
+	},
 } as const satisfies Record<
 	TerminalMultiplexer,
 	{ capabilities: SupportedMultiplexerCapabilities | UnsupportedMultiplexerCapabilities }

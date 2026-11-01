@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed inline charts and images not rendering in Rex without a forced image protocol ([#17651](https://github.com/can1357/oh-my-pi/issues/17651)).
+
 ## [18.14.1] - 2026-10-31
 
 ### Added
