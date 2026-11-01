@@ -232,7 +232,8 @@
 - Fixed session tree user and assistant turns looking identical in themes whose `accent` and `success` colors match or nearly match (`dark-terminal`, `dark-poimandres`, `light-poimandres`): user rows are now bold, the `assistant:` label switches to the path color, and custom and advisor messages are muted ([#17520](https://github.com/can1357/oh-my-pi/pull/17520) by [@wolfiesch](https://github.com/wolfiesch))
 ### Fixed
 
-- Fixed inline charts and images not rendering in Rex without a forced image protocol ([#17651](https://github.com/can1357/oh-my-pi/issues/17651)).
+- Native Rex sessions, including `TERM=xterm-rex` over SSH or tmux, now render Kitty graphics without `PI_FORCE_IMAGE_PROTOCOL` ([#17651](https://github.com/can1357/oh-my-pi/issues/17651)).
+- Rex charts now use Unicode placeholders by default so they remain readable in native scrollback ([#17650](https://github.com/can1357/oh-my-pi/issues/17650)).
 
 ## [18.14.1] - 2026-10-31
 
