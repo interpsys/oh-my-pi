@@ -12,6 +12,7 @@ import { sanitizeStatusText } from "@oh-my-pi/pi-tui/chrome/shared";
 import { formatCost } from "@oh-my-pi/pi-tui/overlays/agent-hub-renderer";
 import { truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import { theme } from "@oh-my-pi/pi-tui/theme";
+import type { CompactChrome } from "@oh-my-pi/pi-tui/prompt/composer";
 import { formatBytes } from "@oh-my-pi/pi-utils";
 import type { DownloadActivity } from "../downloads/activity";
 import type { JudgmentBatchProgress } from "../eval/judgment-batch-events";
@@ -72,7 +73,7 @@ function describeHudRow(key: string, label: string, tail: readonly TspSpan[], ba
 }
 
 /** Progress rows for concurrent judge batches. */
-export class JudgmentBatchProgressHud implements Component {
+export class JudgmentBatchProgressHud implements Component, CompactChrome {
 	readonly #batches = new Map<string, JudgmentBatchProgress>();
 	#native: NativeNode | undefined;
 
@@ -111,6 +112,23 @@ export class JudgmentBatchProgressHud implements Component {
 		const rows: string[] = [];
 		for (const progress of this.#batches.values()) rows.push(this.#renderRow(progress, available));
 		return rows;
+	}
+
+	renderCompact(width: number): string | undefined {
+		if (this.#batches.size === 0) return undefined;
+		let done = 0;
+		let total = 0;
+		let failed = 0;
+		for (const progress of this.#batches.values()) {
+			done += progress.done;
+			total += progress.total;
+			failed += progress.failed;
+		}
+		const failures = failed > 0 ? ` · ${failed} failed` : "";
+		return truncateToWidth(
+			`${theme.fg("dim", `${this.#batches.size} judge batches`)} · ${done}/${total}${failures}`,
+			width,
+		);
 	}
 
 	#renderRow(progress: JudgmentBatchProgress, width: number): string {
@@ -159,7 +177,7 @@ interface DownloadRow {
  * a byte bar when the size is known, the current step otherwise, then a brief
  * `ready` or a lingering failure reason. Owns its reveal/retain timers.
  */
-export class DownloadActivityHud implements Component {
+export class DownloadActivityHud implements Component, CompactChrome {
 	readonly #rows = new Map<number, DownloadRow>();
 	readonly #requestRender: () => void;
 	/** Last description and the revealed-row signature it was built for. */
@@ -255,6 +273,20 @@ export class DownloadActivityHud implements Component {
 			rows.push(this.#renderRow(row.activity, available));
 		}
 		return rows;
+	}
+
+	renderCompact(width: number): string | undefined {
+		const now = Date.now();
+		let shown = 0;
+		let failed = 0;
+		for (const row of this.#rows.values()) {
+			if (row.activity.state === "running" && now - row.startedAt < DOWNLOAD_REVEAL_MS) continue;
+			shown++;
+			if (row.activity.state === "failed") failed++;
+		}
+		if (shown === 0) return undefined;
+		const failures = failed > 0 ? ` · ${failed} failed` : "";
+		return truncateToWidth(theme.fg("dim", `${shown} downloads${failures}`), width);
 	}
 
 	#renderRow(activity: DownloadActivity, width: number): string {

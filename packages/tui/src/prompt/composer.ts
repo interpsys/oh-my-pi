@@ -112,11 +112,30 @@ export interface RuntimeChildrenOptions {
 	/**
 	 * Transient roots that clear themselves (todo and subagent HUDs, progress).
 	 * Their first paint can be their tallest, e.g. a restored todo list on a
-	 * resumed session, so unlike {@link transientChrome} it is never treated as
-	 * their resting height: all of their rows stay out of the floor. Roots listed
-	 * here are transient and need not also appear in `transientChrome`.
+	 * resumed session, so all of their rows stay out of the floor. With the
+	 * default scrollback policy they use only rows the floor-budget transcript
+	 * leaves free: whole roots, compact summaries, or nothing under pressure.
+	 * Roots listed here need not also appear in `transientChrome`.
 	 */
 	readonly selfClearingChrome?: readonly Component[];
+}
+
+/**
+ * Optional, noninteractive one-row summary for expendable chrome under height
+ * pressure. Called after the full render; it must not register images or change
+ * that render's row hit map. Omit the summary when there is nothing to show.
+ * Plain containers inherit their first available child's summary.
+ */
+export interface CompactChrome {
+	renderCompact(width: number): string | undefined;
+}
+
+interface BelowTranscriptChrome {
+	rows: string[];
+	spans: ViewportClickSpan[];
+	roots: { root: Component; start: number; end: number }[];
+	transientRows: number;
+	selfClearingRows: number;
 }
 
 /** Controls the first terminal paint for a composer that does not already own the terminal. */
@@ -461,27 +480,15 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
 		const preRoots = this.#renderRoots(roots.slice(0, transcriptIndex), width);
 		const afterRoots = roots.slice(transcriptIndex + 1);
-		const after: string[] = [];
-		const afterSpans: ViewportClickSpan[] = [];
-		const ends: { root: Component; end: number }[] = [];
-		let transientRows = 0;
-		let selfClearingRows = 0;
-		for (const root of afterRoots) {
-			const start = after.length;
-			this.#renderBelowRoot(root, width, after, afterSpans);
-			if (this.#selfClearingChrome.has(root)) selfClearingRows += after.length - start;
-			else if (this.#transientChrome.has(root)) transientRows += after.length - start;
-			ends.push({ root, end: after.length });
-		}
-		this.#rowsBelow = new Map(ends.map(({ root, end }) => [root, after.length - end]));
-		const transientFloor = this.#syncTransientFloor(transientRows);
+		const chrome = this.#renderBelowRoots(afterRoots, width);
+		const transientFloor = this.#syncTransientFloor(chrome.transientRows);
 		// Eligible chrome excludes user-driven transient rows above their resting height and every
 		// self-clearing row; contraction, floor and rebaseline all use it.
-		const eligibleChrome = after.length - (transientRows - transientFloor) - selfClearingRows;
+		const eligibleChrome = chrome.rows.length - (chrome.transientRows - transientFloor) - chrome.selfClearingRows;
 		const promotedChromeContracted = this.#chromeFloorPromoted && eligibleChrome < (this.#chromeFloor ?? 0);
 		this.#chromeFloor = Math.min(this.#chromeFloor ?? eligibleChrome, eligibleChrome);
 		this.#rebaselineChromeFloor(this.#runActive || transcript.hasActiveBlock(), eligibleChrome);
-		const belowFloor = this.#preferences.completeScrollback ? after.length : this.#chromeFloor;
+		const belowFloor = this.#preferences.completeScrollback ? chrome.rows.length : this.#chromeFloor;
 		// Offer history under capacity pressure only: blocks stay live (and keep
 		// reflowing to the current width) while the screen has room. A batch
 		// leaves the mutable viewport in the same frame it is appended, so its
@@ -498,10 +505,17 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		// The live tail is laid out against the same baseline retirement is
 		// billed against, so its compaction allocator (one row per block, no
 		// inter-block blanks) engages only when a block genuinely cannot retire.
-		// Rows the chrome above its floor displaces are clipped from the top by
-		// the `drop` slice below; they stay live until the chrome shrinks. With
-		// `completeScrollback` none are held back.
+		// User-driven chrome above its floor may still cover the live tail until
+		// it shrinks. Self-clearing HUDs instead yield their rows to this plan;
+		// their displayed height never feeds back into retirement or the floor.
 		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - belowFloor), frame);
+		if (!this.#preferences.completeScrollback) {
+			const fixedChrome = chrome.rows.length - chrome.selfClearingRows;
+			this.#boundSelfClearingChrome(chrome, width, Math.max(0, rows - before.length - active.length - fixedChrome));
+		}
+		const after = chrome.rows;
+		const afterSpans = chrome.spans;
+		this.#rowsBelow = new Map(chrome.roots.map(({ root, end }) => [root, after.length - end]));
 		const activeSpans: ViewportClickSpan[] = [];
 		for (const span of transcript.getLastViewportSpans()) {
 			const ids = (span.component as Partial<{ getClickFocusAgentIds(): string[] }>).getClickFocusAgentIds?.();
@@ -683,6 +697,89 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			this.#nativeSurface = { main: nextMain, dock: nextDock };
 		}
 		return this.#nativeSurface;
+	}
+
+	#renderBelowRoots(roots: readonly Component[], width: number): BelowTranscriptChrome {
+		const chrome: BelowTranscriptChrome = { rows: [], spans: [], roots: [], transientRows: 0, selfClearingRows: 0 };
+		for (const root of roots) {
+			const start = chrome.rows.length;
+			this.#renderBelowRoot(root, width, chrome.rows, chrome.spans);
+			const end = chrome.rows.length;
+			if (this.#selfClearingChrome.has(root)) chrome.selfClearingRows += end - start;
+			else if (this.#transientChrome.has(root)) chrome.transientRows += end - start;
+			chrome.roots.push({ root, start, end });
+		}
+		return chrome;
+	}
+
+	#compactChrome(root: Component, width: number): string | undefined {
+		const compact = root as Component & Partial<CompactChrome>;
+		if (compact.renderCompact !== undefined) return compact.renderCompact(width);
+		if (root instanceof Container && root.render === Container.prototype.render) {
+			for (const child of root.children) {
+				const summary = this.#compactChrome(child, width);
+				if (summary !== undefined) return summary;
+			}
+		}
+		return undefined;
+	}
+
+	/**
+	 * Preserve the already-planned transcript. Reserve summaries first, then
+	 * expand whole HUD roots in display order with any remaining room. Never
+	 * slice a card/tree/image or retain detail click spans on a summary.
+	 */
+	#boundSelfClearingChrome(chrome: BelowTranscriptChrome, width: number, capacity: number): void {
+		if (chrome.selfClearingRows <= capacity) return;
+		const summaries = new Map<Component, string>();
+		const full = new Set<Component>();
+		let spare = capacity;
+		for (const { root, start, end } of chrome.roots) {
+			if (!this.#selfClearingChrome.has(root) || end === start) continue;
+			if (end - start === 1 && spare > 0) {
+				full.add(root);
+				spare--;
+				continue;
+			}
+			if (spare === 0) continue;
+			const summary = this.#compactChrome(root, width);
+			if (summary !== undefined) {
+				summaries.set(root, summary);
+				spare--;
+			}
+		}
+		for (const { root, start, end } of chrome.roots) {
+			if (!this.#selfClearingChrome.has(root) || full.has(root)) continue;
+			const extra = end - start - (summaries.has(root) ? 1 : 0);
+			if (extra > spare) continue;
+			full.add(root);
+			summaries.delete(root);
+			spare -= extra;
+		}
+		const rows: string[] = [];
+		const spans: ViewportClickSpan[] = [];
+		let spanIndex = 0;
+		for (const layout of chrome.roots) {
+			const { root, start, end } = layout;
+			const keepFull = !this.#selfClearingChrome.has(root) || full.has(root);
+			layout.start = rows.length;
+			if (keepFull) {
+				for (let index = start; index < end; index++) rows.push(chrome.rows[index]!);
+			} else {
+				const summary = summaries.get(root);
+				if (summary !== undefined) rows.push(summary);
+			}
+			while (spanIndex < chrome.spans.length && chrome.spans[spanIndex]!.start < end) {
+				const span = chrome.spans[spanIndex++]!;
+				if (keepFull) {
+					const shift = layout.start - start;
+					spans.push({ start: span.start + shift, end: span.end + shift, candidates: span.candidates });
+				}
+			}
+			layout.end = rows.length;
+		}
+		chrome.rows = rows;
+		chrome.spans = spans;
 	}
 
 	/**
@@ -1093,11 +1190,22 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) return this.#renderRoots(roots, width);
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
-		const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
-		const transcriptRows = transcript.renderTail(width, Math.max(0, rows - after.length));
+		const chrome = this.#renderBelowRoots(roots.slice(transcriptIndex + 1), width);
+		const fixedChrome = chrome.rows.length - chrome.selfClearingRows;
+		// This presentation-only path has no retirement plan. Keep user-driven
+		// chrome at its actual height, but let HUDs yield to the semantic tail.
+		const belowRows = this.#preferences.completeScrollback ? chrome.rows.length : fixedChrome;
+		const transcriptRows = transcript.renderTail(width, Math.max(0, rows - belowRows));
 		const pre =
-			transcriptRows.length + after.length >= rows ? [] : this.#renderRoots(roots.slice(0, transcriptIndex), width);
-		return [...pre, ...transcriptRows, ...after];
+			transcriptRows.length + belowRows >= rows ? [] : this.#renderRoots(roots.slice(0, transcriptIndex), width);
+		if (!this.#preferences.completeScrollback) {
+			this.#boundSelfClearingChrome(
+				chrome,
+				width,
+				Math.max(0, rows - pre.length - transcriptRows.length - fixedChrome),
+			);
+		}
+		return [...pre, ...transcriptRows, ...chrome.rows];
 	}
 
 	/** Reflow accepted hard rows exactly as the restored terminal buffer will. */

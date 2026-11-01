@@ -285,7 +285,12 @@ import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "./status-line-host";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
-import { Composer, type ComposerPreferences, type ComposerStatusCache } from "@oh-my-pi/pi-tui/prompt/composer";
+import {
+	Composer,
+	type CompactChrome,
+	type ComposerPreferences,
+	type ComposerStatusCache,
+} from "@oh-my-pi/pi-tui/prompt/composer";
 import { PINNED_HUD_TOGGLE_ID } from "../task/output-manager";
 import { setMagicKeywords } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
 import { MAGIC_KEYWORDS } from "./magic-keywords";
@@ -708,7 +713,7 @@ class DescribedComponent implements Component {
 	}
 }
 
-class TodoHudContainer extends AnchoredLiveContainer {
+class TodoHudContainer extends AnchoredLiveContainer implements CompactChrome {
 	constructor(private readonly mode: InteractiveMode) {
 		super();
 	}
@@ -718,6 +723,11 @@ class TodoHudContainer extends AnchoredLiveContainer {
 			return [];
 		}
 		return super.render(width);
+	}
+
+	renderCompact(width: number): string | undefined {
+		const summary = this.mode.renderCompactStatusLine(width, []).at(-1);
+		return summary === undefined ? undefined : truncateToWidth(summary, width);
 	}
 }
 
@@ -1010,7 +1020,7 @@ function isHudSubagent(session: ObservableSession): boolean {
  * click after rendering at a new width or width configuration: continuation
  * rows belong to the agent (or toggle) whose logical row started them.
  */
-export class SubagentHudComponent implements Component {
+export class SubagentHudComponent implements Component, CompactChrome {
 	readonly #text: Text;
 	#lines: readonly string[];
 	#order: readonly string[];
@@ -1048,6 +1058,10 @@ export class SubagentHudComponent implements Component {
 		this.#renderedRows = rows.length;
 		this.#renderedWidthConfigEpoch = widthConfigEpoch;
 		return rows;
+	}
+	renderCompact(width: number): string | undefined {
+		const title = this.#lines[1];
+		return title === undefined ? undefined : truncateToWidth(title, width);
 	}
 	getClickAgentAtRow(row: number): string | undefined {
 		if (row < 0 || row >= this.#renderedRows || this.#renderedWidth === undefined) return undefined;

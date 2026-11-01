@@ -842,6 +842,22 @@ describe("SubagentHudComponent click rows", () => {
 		expect(hud.getClickAgentAtRow(-1)).toBeUndefined();
 	});
 
+	it("keeps the running count and hub shortcut in a bounded summary without changing detail hit maps", () => {
+		const sessions = ["Alpha", "Beta", "Gamma", "Delta"].map(id => makeSession({ id }));
+		const lines = renderSubagentHudLines(sessions, 120, false, false, "ctrl+g");
+		const hud = new SubagentHudComponent(lines, ["Alpha", "Beta", "Gamma"], 5);
+		const full = hud.render(120);
+		const owners = full.map((_row, row) => hud.getClickAgentAtRow(row));
+
+		const summary = Bun.stripANSI(hud.renderCompact(120) ?? "");
+		expect(summary).toContain("4 running");
+		expect(summary).toContain("ctrl+g");
+		expect(summary).not.toContain("Alpha");
+		expect(Bun.stringWidth(hud.renderCompact(12) ?? "")).toBeLessThanOrEqual(12);
+		expect(full.map((_row, row) => hud.getClickAgentAtRow(row))).toEqual(owners);
+		expect(hud.render(120)).toEqual(full);
+	});
+
 	it("resolves the expander row to the toggle sentinel", () => {
 		const hud = new SubagentHudComponent(["", "Subagents", "row", "toggle"], ["Only"], 3);
 		hud.render(120);
