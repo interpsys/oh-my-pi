@@ -180,6 +180,55 @@ describe("detectTerminalId", () => {
 	});
 });
 
+describe("Rex terminal graphics", () => {
+	const rexEnv = { TERM_PROGRAM: "rex", TERM: "xterm-256color", COLORTERM: "truecolor" };
+
+	it("selects Kitty graphics for native Rex but not unknown true-color terminals", () => {
+		const id = detectTerminalId(rexEnv);
+		expect(id).toBe("rex");
+		expect(resolveImageProtocol(id, rexEnv, true)).toBe(ImageProtocol.Kitty);
+		const mixedCase = { ...rexEnv, TERM_PROGRAM: "ReX" };
+		expect(resolveImageProtocol(detectTerminalId(mixedCase), mixedCase, true)).toBe(ImageProtocol.Kitty);
+		expect(
+			resolveImageProtocol(detectTerminalId({ TERM: "xterm-256color", COLORTERM: "truecolor" }), {}, true),
+		).toBeNull();
+		expect(resolveImageProtocol(detectTerminalId({ TERM_PROGRAM: "ghostty" }), {}, true)).toBe(ImageProtocol.Kitty);
+	});
+
+	it("renders Kitty APCs in a new Rex process unless an explicit override disables or replaces them", async () => {
+		for (const [override, protocol, prefix] of [
+			[undefined, ImageProtocol.Kitty, "\x1b_G"],
+			["off", null, null],
+			["iterm2", ImageProtocol.Iterm2, "\x1b]1337;File="],
+		] as const) {
+			const proc = Bun.spawn({
+				cmd: [
+					process.execPath,
+					"--eval",
+					`import { renderImage, TERMINAL, TERMINAL_ID } from "@oh-my-pi/pi-tui/terminal-capabilities";
+const sequence = renderImage("AA==", { widthPx: 10, heightPx: 10 })?.sequence;
+console.log(JSON.stringify({ id: TERMINAL_ID, protocol: TERMINAL.imageProtocol, sequence }));`,
+				],
+				env: subprocessEnv({ ...rexEnv, PI_FORCE_IMAGE_PROTOCOL: override }),
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const [stdout, stderr, exitCode] = await Promise.all([
+				new Response(proc.stdout).text(),
+				new Response(proc.stderr).text(),
+				proc.exited,
+			]);
+			expect(stderr).toBe("");
+			expect(exitCode).toBe(0);
+			const result: { id: string; protocol: ImageProtocol | null; sequence?: string } = JSON.parse(stdout);
+			expect(result.id).toBe("rex");
+			expect(result.protocol).toBe(protocol);
+			if (prefix === null) expect(result.sequence).toBeUndefined();
+			else expect(result.sequence?.startsWith(prefix)).toBe(true);
+		}
+	});
+});
+
 describe("iTerm2 over SSH", () => {
 	// Env as reported in #12419: an iTerm2 session reached over SSH keeps only
 	// LC_TERMINAL/LC_TERMINAL_VERSION — ITERM_SESSION_ID and TERM_PROGRAM are
@@ -274,7 +323,8 @@ describe("tmux client terminal resolution", () => {
 						process.execPath,
 						"--eval",
 						`import { TERMINAL, TERMINAL_ID } from "@oh-my-pi/pi-tui/terminal-capabilities";
-console.log(JSON.stringify({ id: TERMINAL_ID, notifyProtocol: TERMINAL.notifyProtocol, imageProtocol: TERMINAL.imageProtocol }));`,
+import { getKittyGraphics } from "@oh-my-pi/pi-tui/kitty-graphics";
+console.log(JSON.stringify({ id: TERMINAL_ID, notifyProtocol: TERMINAL.notifyProtocol, imageProtocol: TERMINAL.imageProtocol, placeholders: getKittyGraphics().unicodePlaceholders }));`,
 					],
 					env: subprocessEnv({
 						PI_TEST_RUNTIME: undefined,
@@ -329,6 +379,18 @@ console.log(JSON.stringify({ id: TERMINAL_ID, notifyProtocol: TERMINAL.notifyPro
 		async () => {
 			const stdout = await resolveInsideFakeTmux("tmux 3.4\txterm-kitty");
 			expect(JSON.parse(stdout)).toMatchObject({ id: "kitty", imageProtocol: ImageProtocol.Kitty });
+		},
+	);
+
+	it.skipIf(process.platform === "win32")(
+		"uses Rex placeholders when only the client's TERM identifies the outer terminal",
+		async () => {
+			const stdout = await resolveInsideFakeTmux("tmux 3.4\txterm-rex");
+			expect(JSON.parse(stdout)).toMatchObject({
+				id: "rex",
+				imageProtocol: ImageProtocol.Kitty,
+				placeholders: true,
+			});
 		},
 	);
 });
@@ -549,6 +611,8 @@ function subprocessEnv(overrides: Record<string, string | undefined>): Record<st
 	const env: Record<string, string | undefined> = { ...Bun.env };
 	for (const key of [
 		"PI_FORCE_IMAGE_PROTOCOL",
+		"PI_KITTY_PLACEHOLDERS",
+		"PI_NO_KITTY_PLACEHOLDERS",
 		"PASEO_TERMINAL_ID",
 		"KITTY_WINDOW_ID",
 		"GHOSTTY_RESOURCES_DIR",
@@ -567,20 +631,6 @@ function subprocessEnv(overrides: Record<string, string | undefined>): Record<st
 
 describe("Rex terminal capabilities", () => {
 	const nativeEnv = { TERM_PROGRAM: "rex", TERM: "xterm-256color", COLORTERM: "truecolor" };
-
-	it("selects Kitty from native Rex identity without a forced protocol", () => {
-		const id = detectTerminalId(nativeEnv);
-		expect(id).toBe("rex");
-		expect(resolveImageProtocol(id, nativeEnv, true)).toBe(ImageProtocol.Kitty);
-		const mixedCase = { ...nativeEnv, TERM_PROGRAM: "ReX" };
-		expect(resolveImageProtocol(detectTerminalId(mixedCase), mixedCase, true)).toBe(ImageProtocol.Kitty);
-
-		// The same generic TERM and color depth are not evidence of graphics.
-		const unknown = { ...nativeEnv, TERM_PROGRAM: "unknown-terminal" };
-		expect(resolveImageProtocol(detectTerminalId(unknown), unknown, true)).toBeNull();
-		const ghostty = { ...nativeEnv, TERM_PROGRAM: "ghostty" };
-		expect(resolveImageProtocol(detectTerminalId(ghostty), ghostty, true)).toBe(ImageProtocol.Kitty);
-	});
 
 	it("does not promote unverified Rex capabilities along with Kitty graphics", () => {
 		const id = detectTerminalId(nativeEnv);
@@ -605,6 +655,11 @@ describe("Rex terminal capabilities", () => {
 		[
 			"native Kitty and verified placeholders",
 			{},
+			{ id: "rex", imageProtocol: ImageProtocol.Kitty, placeholders: true, forced: false },
+		],
+		[
+			"TERM-only Rex over SSH with verified placeholders",
+			{ TERM_PROGRAM: undefined, TERM: "xterm-rex", REX_SESSION: undefined, SSH_CONNECTION: "client 1 server 22" },
 			{ id: "rex", imageProtocol: ImageProtocol.Kitty, placeholders: true, forced: false },
 		],
 		[
