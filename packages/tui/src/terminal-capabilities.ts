@@ -67,6 +67,7 @@ export type TerminalId =
 	| "rio"
 	| "tern"
 	| "monstar"
+	| "rex"
 	| "base"
 	| "trueColor";
 
@@ -644,6 +645,10 @@ const KNOWN_TERMINALS = Object.freeze({
 	// activating it focuses the Monstar window. The BEL path uses omp's own
 	// `notify-send` fallback instead, which cannot focus a window.
 	monstar: new TerminalInfo("monstar", ImageProtocol.Kitty, true, true, NotifyProtocol.Osc9, false, false, false, 2),
+	// Native Rex identifies with TERM_PROGRAM=rex and supports Kitty direct
+	// placement and Unicode placeholders. Other terminal features remain
+	// conservative until independently verified.
+	rex: new TerminalInfo("rex", ImageProtocol.Kitty, true, false),
 });
 
 /** Resolve terminal identity from environment markers used by common emulators. */
@@ -666,6 +671,7 @@ export function detectTerminalId(env: NodeJS.ProcessEnv = Bun.env): TerminalId {
 		if (caseEq(program, "rio")) return "rio";
 		if (caseEq(program, "tern")) return "tern";
 		if (caseEq(program, "monstar")) return "monstar";
+		if (caseEq(program, "rex")) return "rex";
 		return null;
 	}
 
@@ -782,9 +788,8 @@ export const TERMINAL: RuntimeTerminal = (() => {
 	return resolved;
 })();
 
-// Seed Kitty Unicode placeholder support from the resolved terminal id. Only
-// kitty/ghostty/otty are known to honor `U=1` placement; other Kitty-protocol paths
-// (wezterm, tmux/screen fallback) treat the placeholder cells as literal PUA
+// Seed Kitty Unicode placeholders from the verified terminal allowlist, including
+// Rex. Other Kitty-protocol paths can treat placeholder cells as literal PUA
 // glyphs, which is the "ASCII artifact + laggy scrolling" reported in #1877.
 setKittyGraphics({ unicodePlaceholders: detectKittyUnicodePlaceholdersSupport(TERMINAL.id, Bun.env) });
 
