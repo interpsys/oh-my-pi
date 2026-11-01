@@ -627,6 +627,9 @@ const KNOWN_TERMINALS = Object.freeze({
 	// OSC 99, and OSC 66 text sizing are outside rio's supported set and keep
 	// the conservative defaults.
 	rio: new TerminalInfo("rio", ImageProtocol.Kitty, true, true),
+	// Rex identifies via TERM_PROGRAM=rex with a plain xterm TERM. Its Kitty
+	// graphics transport is confirmed; other terminal capabilities stay unassumed.
+	rex: new TerminalInfo("rex", ImageProtocol.Kitty, true, false),
 	// Tern (Stencil's terminal, `stencil-term`) sets TERM_PROGRAM=tern and
 	// implements Kitty graphics, OSC 8 and OSC 9/99 notifications. Whether omp
 	// renders natively (Tern Surface Protocol) is decided by the `hello`
@@ -645,10 +648,6 @@ const KNOWN_TERMINALS = Object.freeze({
 	// activating it focuses the Monstar window. The BEL path uses omp's own
 	// `notify-send` fallback instead, which cannot focus a window.
 	monstar: new TerminalInfo("monstar", ImageProtocol.Kitty, true, true, NotifyProtocol.Osc9, false, false, false, 2),
-	// Native Rex identifies with TERM_PROGRAM=rex and supports Kitty direct
-	// placement and Unicode placeholders. Other terminal features remain
-	// conservative until independently verified.
-	rex: new TerminalInfo("rex", ImageProtocol.Kitty, true, false),
 });
 
 /** Resolve terminal identity from environment markers used by common emulators. */
@@ -723,6 +722,7 @@ export function detectTerminalId(env: NodeJS.ProcessEnv = Bun.env): TerminalId {
 
 	if (TERM?.toLowerCase().includes("ghostty")) return "ghostty";
 	if (TERM && caseEq(TERM, "monstar")) return "monstar";
+	if (TERM && caseEq(TERM, "xterm-rex")) return "rex";
 
 	if (COLORTERM) {
 		if (caseEq(COLORTERM, "truecolor") || caseEq(COLORTERM, "24bit")) return "trueColor";
