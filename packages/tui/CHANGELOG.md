@@ -234,6 +234,7 @@
 
 - Native Rex sessions, including `TERM=xterm-rex` over SSH or tmux, now render Kitty graphics without `PI_FORCE_IMAGE_PROTOCOL` ([#17651](https://github.com/can1357/oh-my-pi/issues/17651)).
 - Rex charts now use Unicode placeholders by default so they remain readable in native scrollback ([#17650](https://github.com/can1357/oh-my-pi/issues/17650)).
+- Fixed completed table and reply rows disappearing on short terminals by collapsing todo, subagent and progress HUDs before they cover the transcript ([#17653](https://github.com/can1357/oh-my-pi/issues/17653)).
 
 ## [18.14.1] - 2026-10-31
 
