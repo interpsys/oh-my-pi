@@ -662,6 +662,7 @@ type BlockKind = "text" | "thinking" | "tool_use";
 interface OpenBlock {
 	index: number;
 	kind: BlockKind;
+	argumentsEmitted?: boolean;
 }
 
 // Keepalive cadence for the SSE encoder. Anthropic's API pings periodically;
@@ -912,7 +913,7 @@ export function encodeStream(
 								break;
 							}
 							const index = wireIndex(ev.contentIndex);
-							open.set(ev.contentIndex, { index, kind: "tool_use" });
+							open.set(ev.contentIndex, { index, kind: "tool_use", argumentsEmitted: false });
 							controller.enqueue(
 								sseFrame("content_block_start", {
 									type: "content_block_start",
@@ -927,8 +928,10 @@ export function encodeStream(
 							);
 							break;
 						}
-						case "toolcall_delta":
+						case "toolcall_delta": {
 							if (suppressed.has(ev.contentIndex)) break;
+							const block = open.get(ev.contentIndex);
+							if (block?.kind === "tool_use" && ev.delta.length > 0) block.argumentsEmitted = true;
 							controller.enqueue(
 								sseFrame("content_block_delta", {
 									type: "content_block_delta",
@@ -937,9 +940,23 @@ export function encodeStream(
 								}),
 							);
 							break;
-						case "toolcall_end":
+						}
+						case "toolcall_end": {
+							const block = open.get(ev.contentIndex);
+							if (block?.kind === "tool_use" && !block.argumentsEmitted && isClientToolUse(ev.toolCall)) {
+								// Some streams deliver arguments only on the completed call.
+								// Finalize those inputs without duplicating streamed JSON.
+								controller.enqueue(
+									sseFrame("content_block_delta", {
+										type: "content_block_delta",
+										index: block.index,
+										delta: { type: "input_json_delta", partial_json: JSON.stringify(ev.toolCall.arguments) },
+									}),
+								);
+							}
 							closeBlock(ev.contentIndex);
 							break;
+						}
 						case "done": {
 							for (const idx of Array.from(open.keys())) closeBlock(idx);
 							emitServerToolBlocksBefore(ev.message, ev.message.content.length);
