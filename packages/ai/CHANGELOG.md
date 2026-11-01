@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed tool calls served through the Anthropic auth gateway losing their inputs when arguments arrive only at the end of the call.
+
 ## [18.14.1] - 2026-10-31
 
 ### Added

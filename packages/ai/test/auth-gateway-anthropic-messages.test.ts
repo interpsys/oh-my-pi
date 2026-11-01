@@ -68,6 +68,26 @@ async function collectSse(stream: ReadableStream<Uint8Array>): Promise<SseEvent[
 	return out;
 }
 
+function decodeToolInputs(events: SseEvent[]): Map<number, unknown> {
+	const inputs = new Map<number, unknown>();
+	for (const event of events) {
+		if (event.event !== "content_block_start") continue;
+		const { index, content_block: block } = event.data as {
+			index: number;
+			content_block: { type: string; input: unknown };
+		};
+		if (block.type !== "tool_use") continue;
+		const json = events
+			.filter(delta => delta.event === "content_block_delta" && delta.data.index === index)
+			.map(delta => delta.data.delta as { type: string; partial_json: string })
+			.filter(delta => delta.type === "input_json_delta")
+			.map(delta => delta.partial_json)
+			.join("");
+		inputs.set(index, json ? JSON.parse(json) : block.input);
+	}
+	return inputs;
+}
+
 describe("anthropic-messages parseRequest", () => {
 	it("parses system + user + assistant(thinking,text,tool_use) + tool_result", () => {
 		const parsed = parseRequest({
@@ -920,6 +940,108 @@ describe("anthropic-messages encodeStream", () => {
 		expect(sse[14]!.data).toEqual({ type: "message_stop" });
 	});
 
+	it("preserves distinct inputs for four parallel tool calls with end-only arguments", async () => {
+		const calls: ToolCall[] = [
+			{ type: "toolCall", id: "call_0", name: "read", arguments: { path: "alpha.ts", offset: 1 } },
+			{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "beta.ts", limit: 20 } },
+			{ type: "toolCall", id: "call_2", name: "read", arguments: { path: "docs/雪.md" } },
+			{ type: "toolCall", id: "call_3", name: "read", arguments: { path: 'a"b.txt', offset: 40 } },
+		];
+		const finalMessage: AssistantMessage = {
+			role: "assistant",
+			content: calls,
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			model: "gpt-5.3-codex",
+			usage: emptyUsage(),
+			stopReason: "toolUse",
+			timestamp: 0,
+		};
+		const partial: AssistantMessage = {
+			...finalMessage,
+			content: calls.map(call => ({ ...call, arguments: {} })),
+		};
+		const events: AssistantMessageEvent[] = [{ type: "start", partial }];
+		for (let contentIndex = 0; contentIndex < calls.length; contentIndex++) {
+			events.push({ type: "toolcall_start", contentIndex, partial });
+		}
+		for (const contentIndex of [2, 0, 3, 1]) {
+			events.push({ type: "toolcall_end", contentIndex, toolCall: calls[contentIndex]!, partial: finalMessage });
+		}
+		events.push({ type: "done", reason: "toolUse", message: finalMessage });
+
+		const sse = await collectSse(encodeStream(makeStream(events), "codex"));
+		expect(decodeToolInputs(sse)).toEqual(new Map(calls.map((call, index) => [index, call.arguments])));
+		for (let index = 0; index < calls.length; index++) {
+			const deltas = sse.filter(event => event.event === "content_block_delta" && event.data.index === index);
+			expect(deltas.map(event => event.data.delta)).toEqual([
+				{ type: "input_json_delta", partial_json: JSON.stringify(calls[index]!.arguments) },
+			]);
+			const stopIndex = sse.findIndex(event => event.event === "content_block_stop" && event.data.index === index);
+			expect(sse[stopIndex - 1]).toBe(deltas[0]);
+		}
+	});
+
+	it("preserves interleaved delta and end-only inputs without duplicates or server-executed calls", async () => {
+		const calls: ToolCall[] = [
+			{ type: "toolCall", id: "call_0", name: "read", arguments: { path: "streamed-0.ts" } },
+			{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "end-only-1.ts" } },
+			{ type: "toolCall", id: "call_2", name: "read", arguments: { path: "streamed-2.ts" } },
+			{ type: "toolCall", id: "call_3", name: "read", arguments: { path: "end-only-3.ts" } },
+		];
+		const resolved: ToolCall = {
+			type: "toolCall",
+			id: "call_resolved",
+			name: "todo",
+			arguments: { todos: ["already executed"] },
+		};
+		(resolved as CursorExecResolvedCarrier)[kCursorExecResolved] = true;
+		const finalMessage: AssistantMessage = {
+			role: "assistant",
+			content: [...calls, resolved],
+			api: "anthropic-messages",
+			provider: "cursor",
+			model: "cursor-grok-4.6",
+			usage: emptyUsage(),
+			stopReason: "toolUse",
+			timestamp: 0,
+		};
+		const partial: AssistantMessage = {
+			...finalMessage,
+			content: [...calls.map(call => ({ ...call, arguments: {} })), resolved],
+		};
+		const events: AssistantMessageEvent[] = [{ type: "start", partial }];
+		for (let contentIndex = 0; contentIndex < partial.content.length; contentIndex++) {
+			events.push({ type: "toolcall_start", contentIndex, partial });
+		}
+		events.push(
+			{ type: "toolcall_delta", contentIndex: 0, delta: '{"path":', partial },
+			{ type: "toolcall_delta", contentIndex: 2, delta: '{"path":"streamed-', partial },
+			{ type: "toolcall_delta", contentIndex: 1, delta: "", partial },
+			{ type: "toolcall_end", contentIndex: 1, toolCall: calls[1]!, partial: finalMessage },
+			{ type: "toolcall_delta", contentIndex: 0, delta: '"streamed-0.ts"}', partial },
+			{ type: "toolcall_end", contentIndex: 0, toolCall: calls[0]!, partial: finalMessage },
+			{ type: "toolcall_end", contentIndex: 4, toolCall: resolved, partial: finalMessage },
+			{ type: "toolcall_end", contentIndex: 3, toolCall: calls[3]!, partial: finalMessage },
+			{ type: "toolcall_delta", contentIndex: 2, delta: '2.ts"}', partial },
+			{ type: "toolcall_end", contentIndex: 2, toolCall: calls[2]!, partial: finalMessage },
+			{ type: "done", reason: "toolUse", message: finalMessage },
+		);
+
+		const sse = await collectSse(encodeStream(makeStream(events), "cursor/cursor-grok-4.6"));
+		expect(decodeToolInputs(sse)).toEqual(new Map(calls.map((call, index) => [index, call.arguments])));
+		const inputDeltas = (index: number) =>
+			sse
+				.filter(event => event.event === "content_block_delta" && event.data.index === index)
+				.map(event => event.data.delta as { partial_json: string })
+				.map(delta => delta.partial_json);
+		expect(inputDeltas(0)).toEqual(['{"path":', '"streamed-0.ts"}']);
+		expect(inputDeltas(1)).toEqual(["", '{"path":"end-only-1.ts"}']);
+		expect(inputDeltas(2)).toEqual(['{"path":"streamed-', '2.ts"}']);
+		expect(inputDeltas(3)).toEqual(['{"path":"end-only-3.ts"}']);
+		expect(sse.filter(event => event.data.index === 4)).toEqual([]);
+	});
+
 	it("emits persisted server-tool blocks before the next streamed content block", async () => {
 		const finalMessage: AssistantMessage = {
 			role: "assistant",
@@ -1063,6 +1185,7 @@ describe("anthropic-messages encodeStream", () => {
 			delta: { stop_reason: string };
 		};
 		expect(delta.delta.stop_reason).toBe("tool_use");
+		expect(decodeToolInputs(sse).get(0)).toEqual({ city: "Paris" });
 	});
 
 	it("drops a Cursor-resolved call from the stream and renumbers the blocks after it", async () => {
@@ -1110,6 +1233,11 @@ describe("anthropic-messages encodeStream", () => {
 		]);
 		expect(sse.filter(event => event.event === "content_block_delta").map(event => event.data)).toEqual([
 			{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Plan updated." } },
+			{
+				type: "content_block_delta",
+				index: 1,
+				delta: { type: "input_json_delta", partial_json: '{"city":"Paris"}' },
+			},
 		]);
 		expect(sse.filter(event => event.event === "content_block_stop").map(event => event.data.index)).toEqual([0, 1]);
 		expect(sse.find(event => event.event === "message_delta")?.data.delta).toEqual({
