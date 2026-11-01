@@ -792,9 +792,8 @@ export const TERMINAL: RuntimeTerminal = (() => {
 	return resolved;
 })();
 
-// Seed Kitty Unicode placeholder support from the resolved terminal id. Only
-// kitty/ghostty/otty are known to honor `U=1` placement; other Kitty-protocol paths
-// (wezterm, tmux/screen fallback) treat the placeholder cells as literal PUA
+// Seed Kitty Unicode placeholders from the verified terminal allowlist, including
+// Rex. Other Kitty-protocol paths can treat placeholder cells as literal PUA
 // glyphs, which is the "ASCII artifact + laggy scrolling" reported in #1877.
 setKittyGraphics({ unicodePlaceholders: detectKittyUnicodePlaceholdersSupport(TERMINAL.id, Bun.env) });
 

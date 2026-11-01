@@ -189,6 +189,12 @@ describe("generic terminal launch construction", () => {
 		}
 	});
 
+	it("reports Rex launches as unsupported instead of crashing after Rex detection", () => {
+		const result = getTerminalLaunchPlacement("rex", "pane");
+		if (!("error" in result)) throw new Error("Rex unexpectedly supports launches");
+		expect(result.error).toContain("Rex does not support terminal launches");
+	});
+
 	it("rejects unconfirmed shell grammar and leaves optional provider defaults unset", () => {
 		const unconfirmed = createDefaultTerminalLaunchRequest("cmux", "pane", ["omp", "--resume"], "/repo");
 		if (!("error" in unconfirmed)) throw new Error("shell-input request unexpectedly omitted its grammar error");
