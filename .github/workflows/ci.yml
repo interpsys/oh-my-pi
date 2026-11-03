@@ -109,7 +109,9 @@ jobs:
               is_release=false
               release_tag=""
               channel=stable
-              if [ "${{ github.event_name }}" = "merge_group" ]; then
+              # This fork's Orb releases are produced separately. Never run the
+              # inherited upstream publishing chain from a fork or a queue run.
+              if [ "${{ github.repository }}" != "can1357/oh-my-pi" ] || [ "${{ github.event_name }}" = "merge_group" ]; then
                 printf 'is-release=false\nrelease-tag=\nchannel=stable\n' >> "$GITHUB_OUTPUT"
                 exit 0
               fi
