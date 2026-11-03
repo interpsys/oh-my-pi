@@ -308,8 +308,14 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 					this.#agent,
 				)) as ToolCallEventResult | undefined;
 
-				if (callResult?.block) {
-					const reason = callResult.reason || "Tool execution was blocked by an extension";
+				if (callResult?.result) {
+					// Short-circuit: the handler's result is the call's successful result; the tool never runs.
+					cancelPreflight();
+					return { ...callResult.result, isError: false } as AgentToolResult<TDetails>;
+				}
+				if (callResult?.block || callResult?.abortTurn) {
+					const reason =
+						callResult.reason || callResult.abortTurn?.message || "Tool execution was blocked by an extension";
 					throw new Error(reason);
 				}
 				if (isNonBlankContext(callResult?.additionalContext)) {

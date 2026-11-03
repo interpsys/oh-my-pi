@@ -2110,7 +2110,7 @@ export class ExtensionRunner {
 				)) as ToolCallEventResult | undefined;
 
 				if (!handlerResult) continue;
-				if (handlerResult.block) {
+				if (handlerResult.block || handlerResult.result || handlerResult.abortTurn) {
 					return handlerResult;
 				}
 				const { additionalContext: _context, input: _input, ...controlResult } = handlerResult;
