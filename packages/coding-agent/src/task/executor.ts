@@ -2656,7 +2656,9 @@ async function driveSessionToResult(
 		// Runs that exhaust the ladder with no pending work, or hit a terminal
 		// model error, skip the barrier; teardown reaps their jobs.
 		let asyncPendingNoticeSent = false;
-		while (!abortSignal.aborted) {
+		// A `tool_call` handler's typed `budget_exhausted` turn abort already ended the
+		// turn without another generation: never revive it through the yield ladder.
+		while (!abortSignal.aborted && session.turnAbort?.reason !== "budget_exhausted") {
 			if (!monitor.yieldCalled()) {
 				await runYieldLadder();
 				if (
@@ -2748,6 +2750,15 @@ async function driveSessionToResult(
 
 		// A recorded yield that async-result deliveries superseded and the
 		// model never refreshed is stale: fail the run instead of letting the
+		// A `tool_call` handler's typed `budget_exhausted` turn abort is a recoverable
+		// outcome distinct from a user interrupt ("Request was aborted"): the reason text
+		// leads with `budget_exhausted`; finalize salvages the partial output.
+		const turnAbort = session.turnAbort;
+		if (!delivered && turnAbort?.reason === "budget_exhausted" && !abortSignal.aborted) {
+			aborted = true;
+			abortReasonText = turnAbort.message ? `budget_exhausted: ${turnAbort.message}` : "budget_exhausted";
+			exitCode = 1;
+		}
 		// parent act on a payload that predates the background job outcomes
 		// the model was shown. The stale payload still ships through
 		// finalizeSubprocessOutput's failed-after-yield path (exit 1 + stderr,
