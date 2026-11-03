@@ -682,7 +682,7 @@ jobs:
    merge_gate:
       name: Merge queue validation
       if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
-      needs: [check, native_addons, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods]
+      needs: [release_metadata, check, bazel_lock, native_addons, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods]
       runs-on: ubuntu-22.04
       steps:
          - name: Require all validation jobs to pass
