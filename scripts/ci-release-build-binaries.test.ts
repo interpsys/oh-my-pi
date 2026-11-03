@@ -93,6 +93,38 @@ it("runs code behind a lazy import() from a split chunk of the compiled binary",
 	expect(result.exitCode).toBe(0);
 	expect(result.text().trim()).toBe("lazy chunk");
 }, 30_000);
+
+it("embeds fork provenance independently of the runtime checkout and environment", async () => {
+	using temp = TempDir.createSync("@omp-build-info-");
+	const entrypoint = temp.join("entry.ts");
+	const outfile = temp.join(process.platform === "win32" ? "probe.exe" : "probe");
+	const buildInfoModule = path.join(repoRoot, "packages/coding-agent/src/build-info.ts");
+	await Bun.write(
+		entrypoint,
+		`import { BUILD_INFO, BUILD_VERSION } from ${JSON.stringify(buildInfoModule)};\nconsole.log(JSON.stringify({ ...BUILD_INFO, display: BUILD_VERSION }));\n`,
+	);
+	const commit = (await $`git rev-parse HEAD`.cwd(repoRoot).quiet().text()).trim();
+	await compileCodingAgent({
+		repoRoot: temp.path(),
+		entrypoint,
+		outfile,
+		transformersVersion: "unused",
+		native: null,
+	});
+	const result = Bun.spawnSync([outfile], {
+		cwd: temp.path(),
+		env: { ...process.env, OMP_BUILD_COMMIT: "not-the-compiled-commit" },
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	expect(result.exitCode).toBe(0);
+	expect(JSON.parse(result.stdout.toString())).toEqual({
+		version: "18.16.0",
+		commit,
+		variant: "orb.1",
+		display: `18.16.0 (orb.1 ${commit.slice(0, 7)})`,
+	});
+}, 30_000);
 describe("macOS release binary entitlements", () => {
 	it("allows Xcode MCP automation through Apple Events", async () => {
 		const entitlements = await Bun.file(path.join(repoRoot, "scripts/macos-entitlements.plist")).text();

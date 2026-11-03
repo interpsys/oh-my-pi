@@ -1,3 +1,5 @@
+import * as path from "node:path";
+import { $ } from "bun";
 // Deep import: the pi-utils barrel loads the host native addon, which is
 // absent on cross-compiling release runners.
 import { USER_AGENT } from "@oh-my-pi/pi-utils/dirs";
@@ -39,6 +41,10 @@ export interface CodingAgentCompileOptions {
  * graph supplied by an in-memory build plugin rather than generated files.
  */
 export async function compileCodingAgent(options: CodingAgentCompileOptions): Promise<void> {
+	// Build runners may have no host addon, so resolve the source revision with
+	// git at build time rather than importing the native-backed runtime VCS API.
+	const sourceRoot = path.resolve(import.meta.dir, "../../..");
+	const commit = (await $`git -C ${sourceRoot} rev-parse HEAD`.quiet().text()).trim();
 	const previousCodesignSetting = Bun.env.BUN_NO_CODESIGN_MACHO_BINARY;
 	if (options.skipBuiltinCodesign) {
 		Bun.env.BUN_NO_CODESIGN_MACHO_BINARY = "1";
@@ -50,6 +56,7 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 			external: [...COMPILED_EXTERNAL_DEPENDENCIES],
 			files: options.native ? await embeddedAddonFiles(options.native) : {},
 			define: {
+				__OMP_BUILD_COMMIT__: JSON.stringify(commit),
 				"process.env.PI_COMPILED": JSON.stringify("true"),
 				"process.env.PI_TINY_TRANSFORMERS_VERSION": JSON.stringify(options.transformersVersion),
 				"process.env.PI_DOCS_EMBED": JSON.stringify((await buildDocsIndexPayload()).payload),

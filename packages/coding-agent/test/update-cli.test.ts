@@ -191,6 +191,13 @@ describe("parseReportedVersion", () => {
 		expect(parseReportedVersion("not a version")).toBeUndefined();
 	});
 
+	it("recognizes the base version without discarding a fork's displayed provenance", () => {
+		expect(parseReportedVersion("omp/18.16.0 (orb.1 9510cdb)")).toBe("18.16.0");
+		expect(parseReportedVersion("omp/18.16.0-canary.1 (orb.1 9510cdb)")).toBe("18.16.0-canary.1");
+		expect(parseReportedVersion("omp/18.16.0 unexpected suffix")).toBeUndefined();
+		expect(parseReportedVersion("omp/18.16.0 (incomplete metadata")).toBeUndefined();
+	});
+
 	it("rejects version output from a different executable", () => {
 		expect(parseReportedVersion("node/18.0.5")).toBeUndefined();
 		expect(parseReportedVersion("codex/18.0.5")).toBeUndefined();
@@ -1856,6 +1863,62 @@ describe("managedInstallName", () => {
 		await Bun.write(path.join(root, "manager.json"), "{not json");
 		expect(await managedInstallName(path.join(root, "versions", "1.0.0"))).toBeUndefined();
 	});
+});
+
+describe("harness-managed update refusal", () => {
+	for (const argv of [[], ["--force"]]) {
+		it.skipIf(process.platform === "win32")(
+			`refuses omp update ${argv.join(" ")} before any download or install`,
+			async () => {
+				const home = await makeTempDir();
+				const installRoot = path.join(home, ".local", "share", "omp");
+				const executable = path.join(installRoot, "bin", "omp");
+				const launcherDir = path.join(home, ".local", "bin");
+				const launcher = path.join(launcherDir, "omp");
+				const manager = "harness (`harness pull` or `harness link`)";
+				await fs.mkdir(path.dirname(executable), { recursive: true });
+				await fs.mkdir(launcherDir, { recursive: true });
+				await Bun.write(executable, "#!/bin/sh\nexit 0\n");
+				await fs.chmod(executable, 0o755);
+				await fs.symlink(executable, launcher);
+				await Bun.write(
+					path.join(installRoot, "manager.json"),
+					JSON.stringify({ manager: "harness", name: manager }),
+				);
+				const originalBytes = await Bun.file(executable).bytes();
+				const output = spyOn(console, "log").mockImplementation(() => {});
+				const download = spyOn(globalThis, "fetch").mockRejectedValue(
+					new Error("Managed update attempted a network request"),
+				);
+				const install = spyOn(updateCli, "updateViaBinaryAt").mockRejectedValue(
+					new Error("Managed update attempted installation"),
+				);
+				const spawn = spyOn(Bun, "spawn").mockImplementation(() => {
+					throw new Error("Managed update attempted a package-manager process");
+				});
+				const rename = spyOn(nodeFs.promises, "rename").mockRejectedValue(
+					new Error("Managed update attempted to overwrite its binary"),
+				);
+				const originalPath = process.env.PATH;
+				try {
+					process.env.PATH = launcherDir;
+					await expect(new Update(argv, TEST_CONFIG).run()).resolves.toBeUndefined();
+				} finally {
+					if (originalPath === undefined) delete process.env.PATH;
+					else process.env.PATH = originalPath;
+				}
+				expect(output.mock.calls.flat().join("\n")).toContain(
+					`${launcher} is installed and kept up to date by ${manager}; update it from ${manager}.`,
+				);
+				expect(download).not.toHaveBeenCalled();
+				expect(install).not.toHaveBeenCalled();
+				expect(spawn).not.toHaveBeenCalled();
+				expect(rename).not.toHaveBeenCalled();
+				expect(await Bun.file(executable).bytes()).toEqual(originalBytes);
+				expect(await fs.readdir(path.dirname(executable))).toEqual(["omp"]);
+			},
+		);
+	}
 });
 
 describe("update-cli manager update recovery", () => {

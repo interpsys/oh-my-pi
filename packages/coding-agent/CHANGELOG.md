@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- Orb standalone builds export `BUILD_INFO` with the base version, fork variant and compiled source commit; `omp --version` shows the fork marker and short commit.
+
+### Changed
+
+- Eval `tool.mcp__<server>_<tool>(...)` returns the MCP payload itself (`structuredContent`, else the JSON-decoded text, else the text), and an MCP error result raises instead of returning a flagged object; MCP image blocks still display
+- Python eval `b = await judge_batch(...)` waits until every item settled and returns the batch; a plain call still returns at once
+
+### Fixed
+
+- Python eval cells compile as `<cell-N>` and register their source, so `inspect.getsource` works on functions defined in earlier cells and tracebacks show the source lines
+
 ## [18.16.0] - 2026-11-02
 
 ### Added
@@ -123,14 +136,6 @@
 - Fixed `read` of a whole URL returning no content when the page's first line is over the 50 KB output budget, as on minified pages read with `:raw`; it now shows that line's first 50 KB ([#17500](https://github.com/can1357/oh-my-pi/pull/17500) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed an advisor whose usage-limited account kept being reported as switchable retrying the same capped account thousands of times; it now tries each sibling account at most once per provider per failing review, then falls back, waits, or pauses on the quota ([#17472](https://github.com/can1357/oh-my-pi/issues/17472))
 - Fixed LSP definition, type definition, implementation and reference results carrying a stray carriage return on every source context line from files with Windows (CRLF) line endings ([#17549](https://github.com/can1357/oh-my-pi/pull/17549) by [@JustasMasiulis](https://github.com/JustasMasiulis))
-### Changed
-
-- Eval `tool.mcp__<server>_<tool>(...)` returns the MCP payload itself (`structuredContent`, else the JSON-decoded text, else the text), and an MCP error result raises instead of returning a flagged object; MCP image blocks still display
-- Python eval `b = await judge_batch(...)` waits until every item settled and returns the batch; a plain call still returns at once
-
-### Fixed
-
-- Python eval cells compile as `<cell-N>` and register their source, so `inspect.getsource` works on functions defined in earlier cells and tracebacks show the source lines
 
 ## [18.14.1] - 2026-10-31
 
@@ -157,8 +162,6 @@
 - Browser `fill` in Chrome replaces the text of rich-text editors such as Slate (Discord) and Lexical instead of leaving the old text in place or breaking the editor, and an empty fill clears them ([#17417](https://github.com/can1357/oh-my-pi/pull/17417) by [@will-bogusz](https://github.com/will-bogusz))
 - Requests to the Anthropic API and Factory Droid's hosts now drop their oldest images when long text, tool arguments, or re-declared tool definitions would otherwise push the request past the host's size limit ([#17492](https://github.com/can1357/oh-my-pi/pull/17492) by [@will-bogusz](https://github.com/will-bogusz))
 - Factory Droid requests size images against what each route actually sends: Gemini models count their expanded tool schemas and no longer drop images for another model's reasoning, and only Claude models count withdrawn tool definitions ([#17492](https://github.com/can1357/oh-my-pi/pull/17492))
-### Fixed
-
 - Eval `tool.*` calls skip the shared artifact spill: code receives the full `text`, MCP `details.rawContent` and `details.structuredContent`, and no unused artifact is written (tools that bound their own output, such as `bash`, keep doing so).
 - Spilled direct MCP tool results drop `details.structuredContent` with the duplicate `rawContent` text, so a large structured payload lives only in its artifact instead of in live history.
 - `judge_batch` `status()` always carries `model` (`null` before any answer, `"mixed"` when more than one backend answered, instead of the backend of the last settled item) and `models` (answers per backend); `results()` returns `{key: {answers, model}}`.
