@@ -1094,7 +1094,7 @@ function resolveOmpPath(): string | undefined {
 
 /**
  * Parse the version a launcher reports from `omp --version` output
- * (`omp/X.Y.Z`, or a prerelease such as `omp/X.Y.Z-canary.1`).
+ * (`omp/X.Y.Z`, a prerelease, or either with parenthesized build metadata).
  *
  * The prerelease suffix is preserved so a correctly installed canary build
  * verifies as up to date instead of appearing to report a stale `X.Y.Z` and
@@ -1102,7 +1102,7 @@ function resolveOmpPath(): string | undefined {
  */
 export function parseReportedVersion(output: string): string | undefined {
 	if (!output.startsWith(`${APP_NAME}/`)) return undefined;
-	return output.slice(APP_NAME.length + 1).match(/^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/)?.[1];
+	return output.slice(APP_NAME.length + 1).match(/^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?: \([^()\r\n]+\))?$/)?.[1];
 }
 
 async function reportedVersionAtPath(binaryPath: string): Promise<string | undefined> {

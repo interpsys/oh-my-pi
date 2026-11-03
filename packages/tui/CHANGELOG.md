@@ -143,6 +143,11 @@
 - The LSP diagnostics card lists diagnostics per file, counts every file, and reports server failures instead of `No issues` ([#18106](https://github.com/can1357/oh-my-pi/pull/18106) by [@JustasMasiulis](https://github.com/JustasMasiulis))
 - Closing an overlay that others opened over no longer makes them return focus to it ([#16476](https://github.com/can1357/oh-my-pi/pull/16476))
 - ASCII tree branches are two columns wide (`|-`, `'-`), so child rows align like Unicode trees ([#18103](https://github.com/can1357/oh-my-pi/pull/18103) by [@JustasMasiulis](https://github.com/JustasMasiulis))
+### Fixed
+
+- Native Rex sessions, including `TERM=xterm-rex` over SSH or tmux, now render Kitty graphics without `PI_FORCE_IMAGE_PROTOCOL` ([#17651](https://github.com/can1357/oh-my-pi/issues/17651)).
+- Rex charts now use Unicode placeholders by default so they remain readable in native scrollback ([#17650](https://github.com/can1357/oh-my-pi/issues/17650)).
+- Fixed completed table and reply rows disappearing on short terminals by collapsing todo, subagent and progress HUDs before they cover the transcript ([#17653](https://github.com/can1357/oh-my-pi/issues/17653)).
 
 ## [18.16.0] - 2026-11-02
 
@@ -230,11 +235,6 @@
 - Fixed LSP definition, type definition and implementation results showing the raw `Found 1 definition(s):` text; the response now counts them (`1 definition`) and shows each location over its source lines, its own line marked like a grep match ([#17549](https://github.com/can1357/oh-my-pi/pull/17549) by [@JustasMasiulis](https://github.com/JustasMasiulis))
 - Fixed an LSP definition, type definition or implementation location whose path starts with whitespace being dropped, with its source lines shown under the previous location
 - Fixed session tree user and assistant turns looking identical in themes whose `accent` and `success` colors match or nearly match (`dark-terminal`, `dark-poimandres`, `light-poimandres`): user rows are now bold, the `assistant:` label switches to the path color, and custom and advisor messages are muted ([#17520](https://github.com/can1357/oh-my-pi/pull/17520) by [@wolfiesch](https://github.com/wolfiesch))
-### Fixed
-
-- Native Rex sessions, including `TERM=xterm-rex` over SSH or tmux, now render Kitty graphics without `PI_FORCE_IMAGE_PROTOCOL` ([#17651](https://github.com/can1357/oh-my-pi/issues/17651)).
-- Rex charts now use Unicode placeholders by default so they remain readable in native scrollback ([#17650](https://github.com/can1357/oh-my-pi/issues/17650)).
-- Fixed completed table and reply rows disappearing on short terminals by collapsing todo, subagent and progress HUDs before they cover the transcript ([#17653](https://github.com/can1357/oh-my-pi/issues/17653)).
 
 ## [18.14.1] - 2026-10-31
 

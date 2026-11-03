@@ -25,6 +25,7 @@ import * as logger from "@oh-my-pi/pi-utils/logger";
 import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
 import { fuzzyFilter } from "@oh-my-pi/pi-tui/fuzzy";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { BUILD_VERSION } from "./build-info";
 import { reset as resetCapabilities } from "./capability";
 import {
 	type Args,
@@ -1857,7 +1858,7 @@ export async function runRootCommand(
 		const notifs: (InteractiveModeNotify | null)[] = [];
 
 		if (parsedArgs.version) {
-			writeStartupNotice(parsedArgs, `${VERSION}\n`);
+			writeStartupNotice(parsedArgs, `${BUILD_VERSION}\n`);
 			process.exit(0);
 		}
 
