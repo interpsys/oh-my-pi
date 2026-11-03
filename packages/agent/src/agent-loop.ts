@@ -2925,6 +2925,8 @@ interface PreparedToolCall {
 	validationErrorMessage?: string;
 	blocked?: boolean;
 	blockReason?: string;
+	/** `beforeToolCall` short-circuit result: returned instead of executing the tool. */
+	preparedResult?: AgentToolResult<any>;
 	prepareError?: unknown;
 }
 
@@ -3214,6 +3216,10 @@ async function prepareToolCallDispatch(
 			entry.prepareError = e;
 			continue;
 		}
+		if (beforeResult?.result) {
+			entry.preparedResult = beforeResult.result;
+			continue;
+		}
 		if (beforeResult?.block) {
 			entry.blocked = true;
 			entry.blockReason = beforeResult.reason;
@@ -3278,6 +3284,7 @@ async function speculativeFinalCalls(
 		if (
 			!prepared ||
 			prepared.blocked ||
+			prepared.preparedResult !== undefined ||
 			prepared.prepareError !== undefined ||
 			prepared.validationErrorMessage !== undefined
 		) {
@@ -3418,6 +3425,7 @@ async function executeToolCalls(
 			validationErrorMessage: prepared.validationErrorMessage,
 			blocked: prepared.blocked === true,
 			blockReason: prepared.blockReason,
+			preparedResult: prepared.preparedResult,
 			prepareError: prepared.prepareError,
 			preparedContext: prepared.additionalContext,
 			reportedContext: [] as string[],
@@ -3664,10 +3672,15 @@ async function executeToolCalls(
 				if (abortBeforeToolExecution()) return;
 
 				if (record.prepareError !== undefined) throw record.prepareError;
-				if (record.blocked) {
+				if (record.preparedResult !== undefined) {
+					// A `beforeToolCall` short-circuit: the hook's result is the call's
+					// successful result and the tool never executes.
+					result = { ...coerceToolResult(record.preparedResult).result, isError: false };
+					completedToolExecution = true;
+				} else if (record.blocked) {
 					throw new ToolCallBlockedError(record.blockReason);
 				}
-				if (record.transformError !== undefined) throw record.transformError;
+				if (record.transformError !== undefined && !completedToolExecution) throw record.transformError;
 				const executionArgs =
 					record.executionArgs ??
 					(transformToolCallArguments ? transformToolCallArguments(effectiveArgs, toolCall.name) : effectiveArgs);
@@ -3676,9 +3689,10 @@ async function executeToolCalls(
 				// a queued wake already fixed the combined signal's reason.
 				if (abortBeforeToolExecution()) return;
 
-				const speculativeOutcome = speculationCoordinator
-					? await speculationCoordinator.claim(tool, toolCall, executionArgs)
-					: undefined;
+				const speculativeOutcome =
+					speculationCoordinator && !completedToolExecution
+						? await speculationCoordinator.claim(tool, toolCall, executionArgs)
+						: undefined;
 				if (speculativeOutcome) {
 					// Normalize exactly like the ordinary execute path below: third-party
 					// speculation policies/hosts may return malformed results (missing or

@@ -166,6 +166,7 @@ import { extensionEventFromSessionEvent } from "../extensibility/extensions/life
 import { ManagedTimers } from "../extensibility/extensions/managed-timers";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
+import type { ToolCallAbortTurn } from "../extensibility/shared-events";
 import type { CustomCommandContext } from "../extensibility/custom-commands/types";
 import { SkillDescriptionCatalog } from "../extensibility/skill-descriptions";
 import {
@@ -1486,6 +1487,17 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#recovery.resetForNewPrompt();
 		this.#maintenance.resetForNewPrompt();
 		this.#yieldTerminationPending = false;
+		this.#turnAbort = undefined;
+		this.#pendingTurnAbortToolCallIds.clear();
+	}
+
+	/** A `tool_call` handler's typed turn abort (e.g. `budget_exhausted`), set until the next prompt. */
+	#turnAbort: (ToolCallAbortTurn & { toolName: string; toolCallId: string }) | undefined = undefined;
+	#pendingTurnAbortToolCallIds = new Set<string>();
+
+	/** The typed turn abort an extension requested during the current prompt, if any. */
+	get turnAbort(): (ToolCallAbortTurn & { toolName: string; toolCallId: string }) | undefined {
+		return this.#turnAbort;
 	}
 
 	#acquirePowerAssertion(): void {
@@ -5756,7 +5768,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	}
 
 	#afterToolCall(ctx: AfterToolCallContext): AfterToolCallResult | undefined {
-		if (
+		if (this.#pendingTurnAbortToolCallIds.delete(ctx.toolCall.id)) {
+			// A handler's typed turn abort: the call's refusal or short-circuit result is
+			// recorded, then the turn ends with no further provider request. Not a user
+			// interrupt; the sticky flag suppresses continuations like a terminal yield.
+			this.#yieldTerminationPending = true;
+			this.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
+		} else if (
 			this.#isTerminalYieldToolResult({
 				toolName: ctx.toolCall.name,
 				isError: ctx.isError,
@@ -5819,9 +5837,21 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			runner.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
 			throw error;
 		}
-		if (callResult?.block) {
+		const abortTurn = callResult?.abortTurn;
+		if (abortTurn) {
+			this.#turnAbort = { ...abortTurn, toolName: ctx.tool.name, toolCallId: ctx.toolCall.id };
+			this.#pendingTurnAbortToolCallIds.add(ctx.toolCall.id);
+		}
+		if (callResult?.result) {
 			runner.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
-			return { block: true, reason: callResult.reason || "Tool execution was blocked by an extension" };
+			return { result: callResult.result };
+		}
+		if (callResult?.block || abortTurn) {
+			runner.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
+			return {
+				block: true,
+				reason: callResult?.reason || abortTurn?.message || "Tool execution was blocked by an extension",
+			};
 		}
 		// A computer call's event input is a synthetic {actions, pendingSafetyChecks}
 		// view, not the execution params — a revision cannot map back onto them.

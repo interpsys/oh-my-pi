@@ -941,6 +941,12 @@ export interface BeforeToolCallResult {
 	reason?: string;
 	args?: Record<string, unknown>;
 	additionalContext?: string;
+	/**
+	 * Short-circuit result. The tool never executes; this result becomes the
+	 * call's result with `isError: false`. It takes precedence over `block`, so a
+	 * hook may return both and an older loop that ignores `result` still refuses.
+	 */
+	result?: AgentToolResult;
 }
 
 /**
@@ -1017,9 +1023,7 @@ export interface AfterToolCallContext {
  * }
  * ```
  */
-export interface CustomAgentMessages {
-	// Empty by default - apps extend via declaration merging
-}
+export type CustomAgentMessages = {};
 
 /**
  * AgentMessage: Union of LLM messages + custom messages.

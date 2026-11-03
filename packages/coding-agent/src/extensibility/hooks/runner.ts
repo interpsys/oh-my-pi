@@ -351,7 +351,7 @@ export class HookRunner {
 				const handlerResult = (await handler(event, ctx)) as ToolCallEventResult | undefined;
 
 				if (!handlerResult) continue;
-				if (handlerResult.block) {
+				if (handlerResult.block || handlerResult.result || handlerResult.abortTurn) {
 					return handlerResult;
 				}
 				const { additionalContext: _context, input: _input, ...controlResult } = handlerResult;
