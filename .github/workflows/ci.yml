@@ -33,31 +33,7 @@ on:
          - ".github/**"
    pull_request:
       branches: [main, omp2]
-      paths:
-         - "packages/**"
-         - "crates/**"
-         - "scripts/**"
-         - ".omp/tools/**"
-         - ".omp/tests/**"
-         - "bazel/**"
-         - "MODULE.bazel"
-         - "MODULE.bazel.lock"
-         - "BUILD.bazel"
-         - ".bazelrc"
-         - ".bazelignore"
-         - ".bazelversion"
-         - "Cargo.toml"
-         - "Cargo.lock"
-         - "deny.toml"
-         - "about.toml"
-         - "LICENSE"
-         - "rust-toolchain.toml"
-         - "rustfmt.toml"
-         - "bun.lock"
-         - "bunfig.toml"
-         - "package.json"
-         - "patches/**"
-         - ".github/**"
+   merge_group:
    workflow_dispatch:
       inputs:
          skip_npm:
@@ -133,6 +109,10 @@ jobs:
               is_release=false
               release_tag=""
               channel=stable
+              if [ "${{ github.event_name }}" = "merge_group" ]; then
+                printf 'is-release=false\nrelease-tag=\nchannel=stable\n' >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
               case "${{ github.ref }}" in
                 refs/tags/v[0-9]*)
                   release_tag="${{ github.ref_name }}"
@@ -158,7 +138,7 @@ jobs:
 
    check:
       name: Lint, type check & web build
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/bun-install
@@ -230,7 +210,7 @@ jobs:
    # release. A skipped required check still satisfies branch protection.
    rust_validate:
       name: Validate Rust workspace (bazel)
-      if: github.event_name != 'pull_request'
+      if: (github.event_name != 'pull_request' && github.event_name != 'merge_group')
       runs-on: vmon-large/from=omp-ci
       steps:
          - uses: actions/checkout@v4
@@ -285,7 +265,7 @@ jobs:
    # with required checks.
    native_addons:
       name: Build native addons (bazel)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
       # actions: write lets main prune superseded addon cache entries.
       permissions:
          contents: read
@@ -310,7 +290,7 @@ jobs:
          # skips dot-directories by default.
          - name: Restore main-built native addons
            id: natives-cache
-           if: github.event_name == 'pull_request'
+           if: (github.event_name == 'pull_request' || github.event_name == 'merge_group')
            uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
            with:
               path: ci-natives
@@ -318,7 +298,7 @@ jobs:
               restore-keys: |
                  ${{ steps.natives-key.outputs.prefix }}
          - name: Fetch release native addons (npm)
-           if: github.event_name == 'pull_request' && steps.natives-cache.outputs.cache-matched-key == ''
+           if: (github.event_name == 'pull_request' || github.event_name == 'merge_group') && steps.natives-cache.outputs.cache-matched-key == ''
            shell: bash
            run: |
               set -euo pipefail
@@ -331,7 +311,7 @@ jobs:
          # Make the addon source visible whenever it is not source-matched,
          # instead of leaving a reviewer to wonder which addons the tests ran.
          - name: Report native addon source
-           if: github.event_name == 'pull_request'
+           if: (github.event_name == 'pull_request' || github.event_name == 'merge_group')
            shell: bash
            env:
               EXACT: ${{ steps.natives-cache.outputs.cache-hit }}
@@ -347,10 +327,10 @@ jobs:
 
          # ---- main path: bazel build of the linux-x64 pair ----
          - id: cache
-           if: github.event_name != 'pull_request'
+           if: (github.event_name != 'pull_request' && github.event_name != 'merge_group')
            uses: ./.github/actions/bazel-cache
          - name: Build linux-x64 native addons
-           if: github.event_name != 'pull_request'
+           if: (github.event_name != 'pull_request' && github.event_name != 'merge_group')
            run: |
               set -eo pipefail
               if [ "$(ulimit -Sn)" != unlimited ] && [ "$(ulimit -Sn)" -lt 65536 ]; then ulimit -Sn 65536 || true; fi
@@ -373,7 +353,7 @@ jobs:
          # thousands of actions is the failure mode that made CI slow — make
          # it visible in the run summary instead of discovering it weeks in.
          - name: Report bazel cache stats
-           if: github.event_name != 'pull_request'
+           if: (github.event_name != 'pull_request' && github.event_name != 'merge_group')
            shell: bash
            run: |
               # Bazel runs with --color=yes (config=ci); strip ANSI before
@@ -421,13 +401,13 @@ jobs:
          # looks it up and the probe and save below talk to GitHub.
          - name: Locate GitHub's cache service
            id: gh-results
-           if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+           if: (github.event_name != 'pull_request' && github.event_name != 'merge_group') && github.ref == 'refs/heads/main'
            uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
            with:
               script: core.setOutput("url", process.env.ACTIONS_RESULTS_ORL || process.env.ACTIONS_RESULTS_URL)
          - name: Probe native addon cache entry
            id: natives-cache-probe
-           if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+           if: (github.event_name != 'pull_request' && github.event_name != 'merge_group') && github.ref == 'refs/heads/main'
            continue-on-error: true
            uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
            env:
@@ -437,7 +417,7 @@ jobs:
               key: ${{ steps.natives-key.outputs.key }}
               lookup-only: true
          - name: Save native addon cache entry
-           if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.natives-cache-probe.outputs.cache-hit != 'true'
+           if: (github.event_name != 'pull_request' && github.event_name != 'merge_group') && github.ref == 'refs/heads/main' && steps.natives-cache-probe.outputs.cache-hit != 'true'
            continue-on-error: true
            uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
            env:
@@ -446,7 +426,7 @@ jobs:
               path: ci-natives
               key: ${{ steps.natives-key.outputs.key }}
          - name: Prune superseded native addon cache entries
-           if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.natives-cache-probe.outputs.cache-hit != 'true'
+           if: (github.event_name != 'pull_request' && github.event_name != 'merge_group') && github.ref == 'refs/heads/main' && steps.natives-cache-probe.outputs.cache-hit != 'true'
            continue-on-error: true
            shell: bash
            env:
@@ -475,7 +455,7 @@ jobs:
    # the build also keeps the remote cache warm for release runs.
    native_addons_cross:
       name: Build native addons (bazel, cross targets)
-      if: github.event_name != 'pull_request'
+      if: (github.event_name != 'pull_request' && github.event_name != 'merge_group')
       runs-on: vmon-large/from=omp-ci
       steps:
          - uses: actions/checkout@v4
@@ -541,7 +521,7 @@ jobs:
 
    test_coding_agent_native:
       name: "Test coding-agent native/unit (TS) ${{ matrix.shard }}"
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       timeout-minutes: 25
@@ -557,7 +537,7 @@ jobs:
       strategy:
          fail-fast: false
          matrix:
-            shard: ${{ fromJSON(github.event_name == 'pull_request' && '["1/3","2/3","3/3"]' || '["1/1"]') }}
+            shard: ${{ fromJSON((github.event_name == 'pull_request' || github.event_name == 'merge_group') && '["1/3","2/3","3/3"]' || '["1/1"]') }}
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/bun-install
@@ -572,7 +552,7 @@ jobs:
 
    test_workspace:
       name: Test TS workspace fast
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       timeout-minutes: 20
@@ -594,7 +574,7 @@ jobs:
 
    test_coding_agent_singleton:
       name: Test coding-agent singleton/global-state (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       timeout-minutes: 20
@@ -611,7 +591,7 @@ jobs:
 
    test_ts_native:
       name: Test TS native/integration packages
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       timeout-minutes: 25
@@ -630,7 +610,7 @@ jobs:
 
    test_coding_agent_ui:
       name: Test coding-agent UI/TUI (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       timeout-minutes: 25
@@ -647,7 +627,7 @@ jobs:
 
    test_coding_agent_runtime:
       name: Test coding-agent runtime/session (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       timeout-minutes: 25
@@ -666,7 +646,7 @@ jobs:
 
    test_smoke:
       name: Test CLI smoke (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       timeout-minutes: 15
@@ -681,7 +661,7 @@ jobs:
 
    install_methods:
       name: Install method smoke tests
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
+      runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
       needs: [native_addons]
       if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
       steps:
@@ -694,6 +674,20 @@ jobs:
            env:
               OMP_INSTALL_TEST_SKIP_NATIVE_BUILD: "1"
            run: bun run ci:test:install-methods
+
+   # A stable required check for pull requests and merge groups. Check the result
+   # of every job explicitly: skipped, cancelled or failed tests must not pass.
+   merge_gate:
+      name: Merge queue validation
+      if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
+      needs: [check, native_addons, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods]
+      runs-on: ubuntu-22.04
+      steps:
+         - name: Require all validation jobs to pass
+           env:
+              RESULTS: ${{ toJSON(needs) }}
+           run: |
+              echo "$RESULTS" | jq -e 'all(.[]; .result == "success")' > /dev/null
 
    # Aggregates every validation job so publish-side release jobs gate on one
    # result. Binary BUILDS deliberately do not wait for this gate — they run
