@@ -204,10 +204,37 @@ export class FunctionCallOrder {
 	}
 }
 
+/** Options for {@link convertMessages}. */
+export interface ConvertMessagesOptions {
+	/**
+	 * Replay a model step that opens a turn without its thought signatures, so
+	 * the transport's unsigned-call policy (the bypass sentinel on Cloud Code
+	 * Assist) applies to it. A step opens a turn unless the contents since the
+	 * previous model step are function responses alone.
+	 */
+	unsignedTurnOpeningSteps?: boolean;
+}
+
+/** Whether the user contents after the last model step hold anything but function responses. */
+function opensTurn(contents: readonly Content[]): boolean {
+	let sawFunctionResponse = false;
+	for (let index = contents.length - 1; index >= 0 && contents[index].role !== "model"; index--) {
+		for (const part of contents[index].parts ?? []) {
+			if (!part.functionResponse) return true;
+			sawFunctionResponse = true;
+		}
+	}
+	return !sawFunctionResponse;
+}
+
 /**
  * Convert internal messages to Gemini Content[] format.
  */
-export function convertMessages<T extends GoogleApiType>(model: Model<T>, context: Context): Content[] {
+export function convertMessages<T extends GoogleApiType>(
+	model: Model<T>,
+	context: Context,
+	options: ConvertMessagesOptions = {},
+): Content[] {
 	const contents: Content[] = [];
 	const emittedToolCallNames = new Map<string, string>();
 	const callOrder = new FunctionCallOrder();
@@ -264,6 +291,8 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 			const parts: Part[] = [];
 			// Check if message is from same provider and model - only then keep thinking blocks
 			const isSameProviderAndModel = msg.provider === model.provider && msg.model === model.id;
+			const replaysSignatures =
+				isSameProviderAndModel && !(options.unsignedTurnOpeningSteps === true && opensTurn(contents));
 			const dropsUnsignedThinking = model.compat.dropUnsignedThinking;
 			let isFirstToolCall = true;
 
@@ -271,13 +300,13 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 				if (block.type === "text") {
 					// Skip empty text blocks - they can cause issues with some models (e.g. Claude via Antigravity)
 					if (!block.text || block.text.trim() === "") continue;
-					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.textSignature);
+					const thoughtSignature = resolveThoughtSignature(replaysSignatures, block.textSignature);
 					parts.push({
 						text: block.text.toWellFormed(),
 						...(thoughtSignature && { thoughtSignature }),
 					});
 				} else if (block.type === "thinking") {
-					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.thinkingSignature);
+					const thoughtSignature = resolveThoughtSignature(replaysSignatures, block.thinkingSignature);
 					// Skip empty thinking unless it carries the signature of a signature-only thought part
 					if ((!block.thinking || block.thinking.trim() === "") && !thoughtSignature) continue;
 					if (dropsUnsignedThinking && !thoughtSignature) continue;
@@ -303,7 +332,7 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 					// Code Assist requires it only when the first call itself is unsigned;
 					// signed-first parallel turns must leave unsigned secondary calls bare.
 					// Vertex rejects the sentinel and receives neither fallback. (#9638, #10602)
-					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.thoughtSignature);
+					const thoughtSignature = resolveThoughtSignature(replaysSignatures, block.thoughtSignature);
 					const requiresFallback =
 						model.compat.requiresSkipThoughtSignature ||
 						(isFirstToolCall && model.compat.requiresSkipThoughtSignatureOnFirstFunctionCall);

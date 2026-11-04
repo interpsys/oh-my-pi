@@ -244,7 +244,9 @@ describe("Google Gemini CLI alignment", () => {
 			};
 		};
 		const geminiParts = geminiPayload.request.contents.find(content => content.role === "model")?.parts ?? [];
-		expect(geminiParts).toContainEqual({ thought: true, text: signedThinking, thoughtSignature: signature });
+		// A step that opens a turn replays unsigned on Antigravity Gemini
+		// (google-antigravity-turn-opening-signatures.test.ts); both thoughts stay.
+		expect(geminiParts).toContainEqual({ thought: true, text: signedThinking });
 		expect(geminiParts.some(part => part.text?.includes(unsignedThinking))).toBe(true);
 	});
 
