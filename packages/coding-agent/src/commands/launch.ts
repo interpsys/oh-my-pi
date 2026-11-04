@@ -4,6 +4,7 @@
 
 import { Command } from "@oh-my-pi/pi-utils/cli";
 import { type Args as ParsedArgs, parseArgs, reportCliUsageError } from "../cli/args";
+import { enterHeadlessGate } from "../cli/headless-gate";
 import { prepareAcpTerminalAuthArgs } from "../modes/acp/terminal-auth";
 import { launchHelp } from "./launch-help";
 
@@ -35,6 +36,8 @@ export default class Index extends Command {
 			}
 			throw error;
 		}
+		// Before the session/runtime graph loads, so a waiting run stays small.
+		await enterHeadlessGate(parsed);
 		const runRootCommand = await loadRunRootCommand();
 		try {
 			await runRootCommand(parsed, args);
