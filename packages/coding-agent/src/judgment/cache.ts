@@ -15,6 +15,12 @@
  *         UNIQUE (state, model, name, type, instruction, criteria)
  * usage   (id, state → states.id, results = JSON [oracle.id…], provider, model, tokens, price)
  * ```
+ *
+ * The store is bounded: once its used pages exceed {@link judgmentCacheMaxBytes}
+ * the oldest states (insertion order) are pruned with their oracle and usage
+ * rows, and the freed pages are returned to the filesystem by incremental
+ * auto-vacuum. Reuse of a state is overwhelmingly within hours of its first
+ * judgment, so a recent window keeps nearly every hit.
  */
 import type { Database, Statement } from "bun:sqlite";
 import * as fs from "node:fs";
@@ -23,6 +29,7 @@ import type { Answer, JudgmentRequest, JudgmentResult, Question, Questions } fro
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { isEmbeddedImageContent } from "@oh-my-pi/pi-ai/images/shared";
 import {
+	$env,
 	checkpointWal,
 	getJudgmentCacheDbPath,
 	isBunTestRuntime,
@@ -30,10 +37,42 @@ import {
 	openSqliteDatabaseSync,
 	postmortem,
 	stableStringifyJson,
+	tryAcquireFileLock,
 } from "@oh-my-pi/pi-utils";
 
+/** Default cap on the cache's used database pages: 2 GiB. */
+export const DEFAULT_JUDGMENT_CACHE_MAX_BYTES = 2 * 1024 ** 3;
+/** A prune deletes down to this share of the cap, so the next one is many records away. */
+const PRUNE_TARGET_RATIO = 0.9;
+/** States deleted per transaction; the event loop runs between batches. */
+const PRUNE_BATCH_STATES = 256;
+/** Records between size checks after the first one. */
+const PRUNE_CHECK_INTERVAL = 256;
+/** WAL bytes kept after a checkpoint; a bulk prune or vacuum would otherwise leave a WAL as large as its writes. */
+const WAL_SIZE_LIMIT_BYTES = 64 * 1024 ** 2;
+
+/** Cap from `OMP_JUDGMENT_CACHE_MAX_BYTES` (a positive byte count), else {@link DEFAULT_JUDGMENT_CACHE_MAX_BYTES}. */
+export function judgmentCacheMaxBytes(): number {
+	const value = Number($env.OMP_JUDGMENT_CACHE_MAX_BYTES);
+	return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_JUDGMENT_CACHE_MAX_BYTES;
+}
+
+/** Outcome of one {@link JudgmentCache.prune}. */
+export interface JudgmentCachePrune {
+	/** States deleted, each with its oracle and usage rows. */
+	states: number;
+	/** Used page bytes before and after. */
+	usedBytesBefore: number;
+	usedBytesAfter: number;
+	/** Whether a legacy `auto_vacuum=NONE` store was rebuilt with incremental auto-vacuum. */
+	vacuumed: boolean;
+}
+
+// `auto_vacuum` must precede the first table: an existing store keeps its mode until VACUUM.
 const SCHEMA = `
+PRAGMA auto_vacuum=INCREMENTAL;
 PRAGMA journal_mode=WAL;
+PRAGMA journal_size_limit=${WAL_SIZE_LIMIT_BYTES};
 PRAGMA synchronous=NORMAL;
 PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS states (
@@ -133,6 +172,7 @@ export function sharedJudgmentCache(): JudgmentCache | undefined {
 			const cache = JudgmentCache.open();
 			postmortem.register("judgment-cache", () => cache.close(), { exitOnly: true });
 			shared = cache;
+			void cache.prune();
 		} catch (error) {
 			logger.warn("judgment cache unavailable; judgments run uncached", { error: String(error) });
 			shared = null;
@@ -144,13 +184,20 @@ export function sharedJudgmentCache(): JudgmentCache | undefined {
 /** SQLite store of native judgment answers and the billed requests that produced them. */
 export class JudgmentCache {
 	readonly #db: Database;
+	readonly #dbPath: string;
+	readonly #maxBytes: number;
 	readonly #answer: Statement<{ answer: string }, [string, string, string, string, string, string]>;
 	readonly #insertState: Statement<unknown, [string, string, number]>;
 	readonly #upsertOracle: Statement<{ id: number }, [string, string, string, string, string, string, string, number]>;
 	readonly #insertUsage: Statement<unknown, [string, string, string, string, number, number, number, number]>;
+	#recordsUntilCheck = 0;
+	#pruning: Promise<JudgmentCachePrune | undefined> | undefined;
+	#closed = false;
 
-	private constructor(db: Database) {
+	private constructor(db: Database, dbPath: string, maxBytes: number) {
 		this.#db = db;
+		this.#dbPath = dbPath;
+		this.#maxBytes = maxBytes;
 		db.run(SCHEMA);
 		this.#answer = db.prepare(
 			"SELECT answer FROM oracle WHERE state = ? AND model = ? AND name = ? AND type = ? AND instruction = ? AND criteria = ?",
@@ -169,11 +216,12 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
 
 	/**
 	 * Open (creating if needed) the cache at `dbPath`, quarantining a corrupt store once.
+	 * `maxBytes` caps the used database pages (default {@link judgmentCacheMaxBytes}).
 	 * @throws when the directory or database cannot be created.
 	 */
-	static open(dbPath: string = getJudgmentCacheDbPath()): JudgmentCache {
+	static open(dbPath: string = getJudgmentCacheDbPath(), maxBytes: number = judgmentCacheMaxBytes()): JudgmentCache {
 		fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-		return openSqliteDatabaseSync(dbPath, db => new JudgmentCache(db), { recoverCorruption: true });
+		return openSqliteDatabaseSync(dbPath, db => new JudgmentCache(db, dbPath, maxBytes), { recoverCorruption: true });
 	}
 
 	/**
@@ -237,10 +285,110 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
 		} catch (error) {
 			logger.warn("judgment cache write failed", { error: String(error) });
 		}
+		if (--this.#recordsUntilCheck < 0) {
+			this.#recordsUntilCheck = PRUNE_CHECK_INTERVAL;
+			void this.prune();
+		}
+	}
+
+	/** Bytes held by used database pages (the file size minus its free pages). */
+	usedBytes(): number {
+		return (this.#pragma("page_count") - this.#pragma("freelist_count")) * this.#pragma("page_size");
+	}
+
+	#pragma(name: string): number {
+		return this.#db.query<Record<string, number>, []>(`PRAGMA ${name}`).get()?.[name] ?? 0;
+	}
+
+	/**
+	 * Bring the store under its cap: when its pages exceed it, delete the oldest
+	 * states with their oracle and usage rows until used pages fill at most 90%
+	 * of it, then release the freed pages to the filesystem. The newest state is
+	 * never deleted. Runs in short transactions that yield to the event loop
+	 * between batches; a prune already running in this process is joined, and
+	 * another process's prune makes this one a no-op. Best-effort: failures are
+	 * logged, and a store whose pages were freed but not released is retried by
+	 * the next prune. Resolves `undefined` when there was nothing to do.
+	 */
+	prune(): Promise<JudgmentCachePrune | undefined> {
+		if (this.#pruning) return this.#pruning;
+		try {
+			if (this.#pragma("page_count") * this.#pragma("page_size") <= this.#maxBytes)
+				return Promise.resolve(undefined);
+		} catch (error) {
+			logger.warn("judgment cache size check failed", { error: String(error) });
+			return Promise.resolve(undefined);
+		}
+		this.#pruning = this.#prune().finally(() => {
+			this.#pruning = undefined;
+		});
+		return this.#pruning;
+	}
+
+	async #prune(): Promise<JudgmentCachePrune | undefined> {
+		try {
+			const usedBytesBefore = this.usedBytes();
+			const lock = tryAcquireFileLock(`${this.#dbPath}.prune`);
+			if (!lock) return undefined;
+			try {
+				return await this.#pruneLocked(usedBytesBefore);
+			} finally {
+				lock.release();
+			}
+		} catch (error) {
+			if (!this.#closed) logger.warn("judgment cache prune failed", { error: String(error) });
+			return undefined;
+		}
+	}
+
+	async #pruneLocked(usedBytesBefore: number): Promise<JudgmentCachePrune> {
+		const db = this.#db;
+		using oldest = db.prepare<{ id: string }, [number]>(
+			"SELECT id FROM states WHERE rowid < (SELECT max(rowid) FROM states) ORDER BY rowid LIMIT ?",
+		);
+		const target = this.#maxBytes * PRUNE_TARGET_RATIO;
+		// States are only ever deleted from the oldest end, so their rowid span is their count.
+		using count = db.prepare<{ n: number }, []>("SELECT coalesce(max(rowid) - min(rowid) + 1, 0) AS n FROM states");
+		let states = 0;
+		let used = usedBytesBefore;
+		while (!this.#closed && used > target) {
+			// Delete about as many states as the excess holds at the store's average size, so a
+			// small cap is not overshot by a whole batch. Records may land between batches.
+			const remaining = count.get()?.n ?? 0;
+			const want = Math.ceil(((used - target) * remaining) / used);
+			const ids = oldest.all(Math.min(PRUNE_BATCH_STATES, Math.max(1, want))).map(row => row.id);
+			if (ids.length === 0) break;
+			const list = JSON.stringify(ids);
+			db.transaction(() => {
+				db.run("DELETE FROM usage WHERE state IN (SELECT value FROM json_each(?))", [list]);
+				db.run("DELETE FROM oracle WHERE state IN (SELECT value FROM json_each(?))", [list]);
+				db.run("DELETE FROM states WHERE id IN (SELECT value FROM json_each(?))", [list]);
+			})();
+			states += ids.length;
+			await Bun.sleep(0);
+			used = this.usedBytes();
+		}
+		let vacuumed = false;
+		if (!this.#closed) {
+			const mode = db.query<{ auto_vacuum: number }, []>("PRAGMA auto_vacuum").get()?.auto_vacuum;
+			if (mode === 0) {
+				// A store created before the cap never returns pages to the filesystem; rebuild it once.
+				db.run("PRAGMA auto_vacuum=INCREMENTAL");
+				db.run("VACUUM");
+				vacuumed = true;
+			} else {
+				db.run("PRAGMA incremental_vacuum");
+			}
+			checkpointWal(db);
+		}
+		const result = { states, usedBytesBefore, usedBytesAfter: this.usedBytes(), vacuumed };
+		logger.debug("judgment cache pruned", { ...result });
+		return result;
 	}
 
 	/** Checkpoint and close the database; the cache must not be used afterwards. */
 	close(): void {
+		this.#closed = true;
 		checkpointWal(this.#db);
 		this.#db.close();
 	}
