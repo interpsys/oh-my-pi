@@ -60,6 +60,8 @@ export interface NormalizeSchemaOptions {
 	foldOneOfIntoAnyOf: boolean;
 	dropNonScalarEnum: boolean;
 	stringEnumsOnly?: boolean;
+	/** Drop `""` enum members (Google's Schema proto rejects them) and an enum left with none. */
+	dropEmptyEnumMembers?: boolean;
 	rejectResidualIncompatibilities?: ReadonlyArray<ResidualSchemaIncompatibility>;
 	validateAndFallback?: { fallback: unknown };
 }
@@ -177,13 +179,15 @@ function hasUnrepresentableGoogleEnumConstraint(
 		return false;
 	}
 
+	// Post-processing drops an enum with a non-string member or with no non-empty member;
+	// dropping one under `not` would invert the constraint.
 	if (
 		Array.isArray(value.enum) &&
-		(value.enum.length === 0 || value.enum.some(enumValue => typeof enumValue !== "string"))
+		(value.enum.some(enumValue => typeof enumValue !== "string") || value.enum.every(enumValue => enumValue === ""))
 	) {
 		return true;
 	}
-	if (Object.hasOwn(value, "const") && typeof value.const !== "string") return true;
+	if (Object.hasOwn(value, "const") && (typeof value.const !== "string" || value.const === "")) return true;
 
 	for (const key in value) {
 		if (!Object.hasOwn(value, key)) continue;
@@ -604,6 +608,7 @@ function applyNodePostProcessing(schema: JsonObject, options: NormalizeSchemaWal
 	if (options.foldOneOfIntoAnyOf) current = foldOneOfIntoAnyOf(current);
 	if (options.dropNonScalarEnum) current = dropNonScalarEnumForMfjs(current);
 	if (options.stringEnumsOnly && options.booleanIsSubschema) current = dropNonStringEnumForGoogle(current);
+	if (options.dropEmptyEnumMembers && options.booleanIsSubschema) current = dropEmptyEnumMembers(current);
 	return current;
 }
 
@@ -629,6 +634,15 @@ function dropNonStringEnumForGoogle(schema: JsonObject): JsonObject {
 	if (!Array.isArray(schema.enum)) return schema;
 	const isStringEnum = schema.enum.length > 0 && schema.enum.every(value => typeof value === "string");
 	return isStringEnum ? schema : copySchemaWithout(schema, "enum");
+}
+
+/** Google's Schema proto rejects empty enum values (`enum[i]: cannot be empty`); drop them, and the enum once none remain. */
+function dropEmptyEnumMembers(schema: JsonObject): JsonObject {
+	if (!Array.isArray(schema.enum)) return schema;
+	const members = schema.enum.filter(value => value !== "");
+	if (members.length === 0) return copySchemaWithout(schema, "enum");
+	if (members.length === schema.enum.length) return schema;
+	return { ...schema, enum: members };
 }
 
 /** Copy all keys from a schema except the specified combiner key. */
@@ -1314,6 +1328,7 @@ export function normalizeSchemaForGoogle(value: unknown): unknown {
 		inferTypeForBareEnum: true,
 		dropNonScalarEnum: false,
 		stringEnumsOnly: true,
+		dropEmptyEnumMembers: true,
 		foldOneOfIntoAnyOf: false,
 	});
 }
@@ -1336,6 +1351,7 @@ export function normalizeSchemaForCCA(value: unknown): unknown {
 		extractNullableFromUnions: true,
 		inferTypeForBareEnum: true,
 		dropNonScalarEnum: false,
+		dropEmptyEnumMembers: true,
 		foldOneOfIntoAnyOf: false,
 		rejectResidualIncompatibilities: ["type-array", "type-null", "nullable", "combiners", "not"],
 		validateAndFallback: { fallback: CLOUD_CODE_ASSIST_CLAUDE_FALLBACK_SCHEMA },
