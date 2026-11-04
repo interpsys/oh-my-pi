@@ -9,6 +9,7 @@ const forkNotes = [
 			"Eval `tool.mcp__<server>_<tool>(...)`",
 			"Python eval `b = await judge_batch(...)`",
 			"Python eval cells compile as `<cell-N>`",
+			"The native judgment answer cache (`~/.omp/cache/judgment-cache.db`) is capped",
 		],
 	},
 	{
