@@ -66,7 +66,8 @@ describe("omp auth-broker status", () => {
 		process.stdout.write = ORIGINAL_STDOUT_WRITE;
 		server?.stop(true);
 		server = undefined;
-		process.exitCode = savedExitCode;
+		// Assigning `undefined` does not clear a code Bun already recorded; reset it to 0.
+		process.exitCode = savedExitCode ?? 0;
 		for (const key of ["OMP_AUTH_BROKER_URL", "OMP_AUTH_BROKER_TOKEN"] as const) {
 			if (savedEnv[key] === undefined) delete process.env[key];
 			else process.env[key] = savedEnv[key];
