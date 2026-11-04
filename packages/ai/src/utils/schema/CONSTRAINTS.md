@@ -87,13 +87,17 @@ Schemas sent on the Google JSON Schema path MUST follow:
 4. **Object schemas get an explicit properties map**
    - `{ "type": "object" }` becomes `{ "type": "object", "properties": {} }`.
 
+5. **Empty-string `enum` members are dropped**
+   - Gemini rejects `""` in `enum` (`enum[i]: cannot be empty`): `""` members are removed, an `enum` left empty is omitted (the node keeps its `type`), and a `not` over `""` is dropped rather than inverted.
+
 ### 2.1 Factory droid Gemini (`normalizeSchemaForFactoryDroid`)
 
 The droid CLI's gemini wire (`factory-droid/google-generate`) uses an
 ALLOWLIST copier instead of the shared denylist normalizer — it preserves
 `type`/`title`/`description`/`required`/`format`/`minimum`/`maximum`/
 `minLength`/`maxLength`/`pattern`/`minItems`/`maxItems`/`default`/`example`,
-converts `const` to a stringified single-entry `enum`, merges `allOf` first
+converts `const` to a stringified single-entry `enum`, drops empty-string `enum`
+members (omitting an `enum` left empty), merges `allOf` first
 (branch `required` lists union), then handles `anyOf`/`oneOf` by branch types:
 typed non-null branches of different types stay an `anyOf` (a `null` branch
 becomes `nullable: true`; branch `required` names missing from the branch's
@@ -126,6 +130,7 @@ For Cloud Code Assist Claude tool declarations, schema MUST satisfy stricter con
 2. **`nullable` keyword MUST be stripped** in CCA Claude path.
 3. `type: ["T", "null"]` becomes `type: "T"` with no `nullable` marker; a multi-type array becomes `anyOf` branches that the combiner rules below collapse.
 4. Human-meaningful stripped keys are appended to `description` with the same spill format used by the Google dispatcher.
+5. Empty-string `enum` members are dropped as on the Google path (§2 item 5).
 
 ### 3.3 Combiner/union normalization contract
 

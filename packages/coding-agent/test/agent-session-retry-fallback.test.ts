@@ -9152,4 +9152,116 @@ describe("AgentSession retry fallback", () => {
 		expect(requestedModels).toContain("openrouter/z-ai/glm-4.7@chutes");
 		expect(getLastAssistantMessage(session).stopReason).not.toBe("error");
 	});
+
+	describe("Antigravity 400 INVALID_ARGUMENT", () => {
+		// Verbatim production error: the Cloud Code Assist envelope on an empty turn.
+		const invalidArgument =
+			'Cloud Code Assist API error (400): {\n  "error": {\n    "code": 400,\n    "message": "Request contains an invalid argument.",\n    "status": "INVALID_ARGUMENT"\n  }\n}';
+		const fallbackSelector = "openai/gpt-4o-mini";
+
+		beforeAll(() => {
+			authStorage.keys.setRuntime("google-antigravity", "google-antigravity-test-key");
+		});
+
+		afterAll(() => {
+			authStorage.keys.removeRuntime("google-antigravity");
+		});
+
+		async function promptWithPrimaryFailures(modelId: string, error: string, failures: number) {
+			const model = getBundledModel("google-antigravity", modelId);
+			if (!model) {
+				throw new Error(`Expected bundled google-antigravity/${modelId} to exist`);
+			}
+			const primary = `${model.provider}/${model.id}`;
+			const mock = createMockModel();
+			const requestedModels: string[] = [];
+			const requestContexts: Message[][] = [];
+			const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
+			let primaryFailures = 0;
+			const agent = new Agent({
+				getApiKey: requested => `${requested.provider}-test-key`,
+				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+				convertToLlm,
+				streamFn: (requested, context, options) => {
+					const selector = `${requested.provider}/${requested.id}`;
+					requestedModels.push(selector);
+					requestContexts.push([...context.messages]);
+					if (selector === primary && primaryFailures < failures) {
+						primaryFailures += 1;
+						mock.push({ throw: error });
+					} else {
+						mock.push({ content: [`ok:${selector}`] });
+					}
+					return mock.stream(requested, context, options);
+				},
+			});
+			const active = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings: Settings.isolated({
+					"compaction.enabled": false,
+					"retry.baseDelayMs": 5,
+					"retry.fallbackChains": { "google-antigravity/*": [fallbackSelector] },
+				}),
+				modelRegistry,
+			});
+			session = active;
+			active.subscribe(event => {
+				if (event.type === "retry_fallback_applied") fallbackAppliedEvents.push(event);
+			});
+
+			await active.prompt("Keep working on Antigravity");
+			await active.waitForIdle();
+			return { active, primary, requestedModels, requestContexts, fallbackAppliedEvents };
+		}
+
+		it("continues on the same Gemini model with a reminder instead of falling back", async () => {
+			const { active, primary, requestedModels, requestContexts, fallbackAppliedEvents } =
+				await promptWithPrimaryFailures("gemini-4-argon", invalidArgument, 1);
+
+			expect(requestedModels).toEqual([primary, primary]);
+			expect(fallbackAppliedEvents).toEqual([]);
+			// The empty failed turn is dropped; the appended reminder changes the request body.
+			expect(requestContexts[1].map(message => message.role)).toEqual(["user", "developer"]);
+			const reminder = requestContexts[1][1];
+			if (reminder.role !== "developer") throw new Error(`Expected developer, got ${reminder.role}`);
+			const reminderText =
+				typeof reminder.content === "string"
+					? reminder.content
+					: reminder.content.map(part => (part.type === "text" ? part.text : "")).join("");
+			expect(reminderText).toContain("INVALID_ARGUMENT");
+			expect(reminderText).toContain("Attempt #1/3");
+			expect(active.agent.state.messages.map(message => message.role)).toEqual(["user", "developer", "assistant"]);
+			expect(getLastAssistantMessage(active).stopReason).toBe("stop");
+		});
+
+		it("falls back once three consecutive same-model continuations are spent", async () => {
+			const { active, primary, requestedModels, fallbackAppliedEvents } = await promptWithPrimaryFailures(
+				"gemini-4-argon",
+				invalidArgument,
+				4,
+			);
+
+			expect(requestedModels).toEqual([primary, primary, primary, primary, fallbackSelector]);
+			expect(fallbackAppliedEvents).toHaveLength(1);
+			expect(fallbackAppliedEvents[0]).toMatchObject({ role: "google-antigravity/*" });
+			expect(getLastAssistantMessage(active).stopReason).toBe("stop");
+		});
+
+		it("leaves the Antigravity Claude route on the hard-error fallback", async () => {
+			const { primary, requestedModels } = await promptWithPrimaryFailures("claude-sonnet-4-6", invalidArgument, 1);
+
+			expect(requestedModels).toEqual([primary, fallbackSelector]);
+		});
+
+		it("leaves other Antigravity Gemini hard errors on the fallback chain", async () => {
+			const { primary, requestedModels } = await promptWithPrimaryFailures(
+				"gemini-4-argon",
+				"unrecoverable model quirk",
+				1,
+			);
+
+			expect(requestedModels).toEqual([primary, fallbackSelector]);
+		});
+	});
 });
