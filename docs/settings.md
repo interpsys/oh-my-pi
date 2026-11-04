@@ -1029,6 +1029,15 @@ session:
 
 Both are unset by default and accept positive USD amounts; `--warn-cost` and `--max-cost` override them for one run, and setting or changing either while a session is open applies to its next request. Spend counts every model request of the session and its subagents at the costs the model catalog prices: agent turns, side requests (compaction, handoff, advisor reviews, `/btw`, cache warming), eval `completion()`/`judge()`/`judge_batch()`, judgment-backed `find`, image questions, image descriptions for text-only models, edit auto-repair, and job widgets; at the cap these are refused too, and no session title is generated. Memory extraction (Mnemopi and memories consolidation) runs in the background and is neither counted nor refused. The cap is checked before each request goes out, so requests already in flight can finish past it. A session started with `--resume`/`--continue`, or switched to, starts from the spend its session file records (the total the footer and `/usage` show), which leaves out background subagents' spend and side requests from earlier runs; `/new` starts from zero, while fork, branch and `/btw` keep the session's spend. When the cap stops a run, the interactive TUI shows the reason and puts a refused prompt back in the editor, print mode exits with status `3`, and RPC reports `error.code: "cost_cap"`.
 
+### Headless concurrency
+
+```yaml
+headless:
+   maxConcurrent: 12 # headless runs allowed at once on this machine
+```
+
+Caps concurrent headless runs (`-p`, `--mode text|json`, or stdin that is not a terminal) machine-wide: each run holds one of N slot locks under `~/.omp/run/headless-gate` from before its session starts until it exits, and waits while all are held (see [Headless / print mode](./cli-reference.md#headless--print-mode)). Must be a positive integer; an invalid value fails a headless launch with exit 1. It is read only from the active profile's global `config.yml`, at launch; project config, `--config` and `PI_CONFIG_FILES` do not apply. `OMP_HEADLESS_SLOTS` can lower it for one run, never raise it.
+
 ### Other groups
 
 Every schema path not individually tabulated in this catalog is explicitly deferred to `omp config list`. Additional groups include:

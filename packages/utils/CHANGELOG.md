@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `getHeadlessGateDir()`, which returns the profile-independent directory of headless-run slot locks (`~/.omp/run/headless-gate`; XDG default: `$XDG_STATE_HOME/omp/run/headless-gate`)
+
 ## [18.14.1] - 2026-10-31
 
 ### Added
