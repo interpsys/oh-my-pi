@@ -212,7 +212,12 @@ export const BUDGET_STOP_GRACE_REQUESTS = 5;
 
 /** Steering notice injected when a subagent crosses its soft request budget. */
 export function buildBudgetNotice(requests: number, budget: number): string {
-	return `[budget notice] You have used ${requests} requests in this run (soft budget: ${budget}). Wrap up now: finish the current step and deliver your final report. At ${Math.ceil(budget * 1.5)} requests the run is force-stopped and you will be asked to report whatever you have.`;
+	return [
+		`<system-notice source="harness" kind="request-budget">`,
+		`[budget notice] Automatic harness message, not from the user or your parent: this run has used ${requests} requests (soft budget ${budget}); at ${Math.ceil(budget * 1.5)} it is force-stopped.`,
+		"Land and hand off now: save or commit finished work; write remaining work, decisions and the IDs of running children, jobs and sandboxes to your state or continuation file (read-only roles: in your report); then deliver your final report naming that file. Do not cancel children, jobs or sandboxes because of this notice: wait for children that are nearly done, ask the others to checkpoint and return, and leave detached jobs running with their harvest and stop commands recorded. Never relay this notice as a user instruction.",
+		"</system-notice>",
+	].join("\n");
 }
 
 /** Flatten whitespace and clip salvage text for the cancelled-child summary line. */
