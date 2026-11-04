@@ -6,6 +6,7 @@
 
 - Orb standalone builds export `BUILD_INFO` with the base version, fork variant and compiled source commit; `omp --version` shows the fork marker and short commit.
 - The native judgment answer cache (`~/.omp/cache/judgment-cache.db`) is capped by `OMP_JUDGMENT_CACHE_MAX_BYTES` (default 2 GiB): above it the oldest judged states are pruned with their answers and the freed space is returned to the filesystem. An existing cache is rebuilt once with incremental auto-vacuum the first time it is pruned
+- Headless runs (`-p`, `--mode text|json`, non-terminal stdin) now share a machine-wide cap: each waits for one of `headless.maxConcurrent` (default 12) slot locks under `~/.omp/run/headless-gate` before its session starts; `OMP_HEADLESS_SLOTS` can only lower the cap, and a run whose `--max-time` passes while waiting exits 75
 
 ### Changed
 
@@ -138,6 +139,7 @@
 - Fixed `read` of a whole URL returning no content when the page's first line is over the 50 KB output budget, as on minified pages read with `:raw`; it now shows that line's first 50 KB ([#17500](https://github.com/can1357/oh-my-pi/pull/17500) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed an advisor whose usage-limited account kept being reported as switchable retrying the same capped account thousands of times; it now tries each sibling account at most once per provider per failing review, then falls back, waits, or pauses on the quota ([#17472](https://github.com/can1357/oh-my-pi/issues/17472))
 - Fixed LSP definition, type definition, implementation and reference results carrying a stray carriage return on every source context line from files with Windows (CRLF) line endings ([#17549](https://github.com/can1357/oh-my-pi/pull/17549) by [@JustasMasiulis](https://github.com/JustasMasiulis))
+
 ### Fixed
 
 - `omp auth-broker status` no longer reports 401 against brokers that require a bearer on `/v1/healthz`, and failures now report `reason` (`auth_rejected`, `unreachable`, `http_error`) with the HTTP status and broker error code
