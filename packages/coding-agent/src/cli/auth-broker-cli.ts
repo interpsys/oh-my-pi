@@ -31,7 +31,12 @@ import {
 	PROVIDER_REGISTRY,
 	SqliteAuthCredentialStore,
 } from "@oh-my-pi/pi-ai";
-import { AuthBrokerClient, DEFAULT_AUTH_BROKER_BIND, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
+import {
+	AuthBrokerClient,
+	AuthBrokerError,
+	DEFAULT_AUTH_BROKER_BIND,
+	startAuthBroker,
+} from "@oh-my-pi/pi-ai/auth-broker";
 import { refreshOAuthToken } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthCredentials } from "@oh-my-pi/pi-ai/oauth/types";
 import { $which, APP_NAME, getAgentDbPath, getConfigRootDir, logger, VERSION } from "@oh-my-pi/pi-utils";
@@ -743,13 +748,40 @@ async function runStatus(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+		const status = error instanceof AuthBrokerError ? error.status : undefined;
+		const code = error instanceof AuthBrokerError ? brokerErrorCode(error.body) : undefined;
+		// No status means the request never got an HTTP answer (DNS, refused, timeout).
+		const reason =
+			status === 401 || status === 403 ? "auth_rejected" : status === undefined ? "unreachable" : "http_error";
 		if (flags.json) {
-			process.stdout.write(`${JSON.stringify({ ok: false, url: cfg.url, error: message })}\n`);
+			process.stdout.write(`${JSON.stringify({ ok: false, url: cfg.url, reason, status, code, error: message })}\n`);
 		} else {
-			process.stdout.write(`${chalk.red("FAILED")} ${cfg.url}: ${message}\n`);
+			const detail = code ? `${message} (${code})` : message;
+			process.stdout.write(`${chalk.red("FAILED")} ${cfg.url}: ${reason.replace("_", " ")}: ${detail}\n`);
 		}
 		process.exitCode = 1;
 	}
+}
+
+/**
+ * Error code from a broker error body: orbd answers `{"error":{"code":…}}`,
+ * the standalone broker `{"error":"unauthorized"}`.
+ */
+function brokerErrorCode(body: string | undefined): string | undefined {
+	if (!body) return undefined;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(body);
+	} catch {
+		return undefined;
+	}
+	if (typeof parsed !== "object" || parsed === null || !("error" in parsed)) return undefined;
+	const inner = parsed.error;
+	if (typeof inner === "string") return inner;
+	if (typeof inner === "object" && inner !== null && "code" in inner && typeof inner.code === "string") {
+		return inner.code;
+	}
+	return undefined;
 }
 
 export async function runAuthBrokerCommand(cmd: AuthBrokerCommandArgs): Promise<void> {

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `AuthBrokerClient.healthz()` now sends the configured bearer token, so health checks pass through brokers fronted by a server that authenticates every path
+
 ## [18.14.1] - 2026-10-31
 
 ### Added

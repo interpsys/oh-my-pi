@@ -134,6 +134,22 @@ describe("auth-broker wire surface", () => {
 		expect(body.ok).toBe(true);
 	});
 
+	test("client healthz sends the bearer only when a token is configured", async () => {
+		const seen: (string | null)[] = [];
+		const fetchImpl: typeof fetch = Object.assign(
+			async (input: string | URL | Request, init?: RequestInit) => {
+				seen.push(new Headers(init?.headers).get("authorization"));
+				return fetch(input, init);
+			},
+			{ preconnect: fetch.preconnect },
+		);
+		expect(await new AuthBrokerClient({ url: handle!.url, token, fetchImpl }).healthz()).toMatchObject({ ok: true });
+		expect(await new AuthBrokerClient({ url: handle!.url, token: "", fetchImpl }).healthz()).toMatchObject({
+			ok: true,
+		});
+		expect(seen).toEqual([`Bearer ${token}`, null]);
+	});
+
 	test("GET /v1/snapshot requires bearer and redacts refresh tokens", async () => {
 		const unauthorized = await fetch(`${handle!.url}/v1/snapshot`);
 		expect(unauthorized.status).toBe(401);

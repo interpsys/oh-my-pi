@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `omp auth-broker status` no longer reports 401 against brokers that require a bearer on `/v1/healthz`, and failures now report `reason` (`auth_rejected`, `unreachable`, `http_error`) with the HTTP status and broker error code
+
 ## [18.14.1] - 2026-10-31
 
 ### Added

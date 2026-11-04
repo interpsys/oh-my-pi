@@ -2,8 +2,10 @@
  * HTTP client for the omp auth-broker server.
  *
  * Used by {@link RemoteAuthCredentialStore} (snapshot pulls) and by
- * `omp auth-broker status` (liveness checks). All endpoints except
- * `/v1/healthz` require a bearer token.
+ * `omp auth-broker status` (liveness checks). Every request carries the
+ * bearer token; `/v1/healthz` omits it only when no token is configured,
+ * since the standalone broker serves healthz openly but fronts such as orbd
+ * gate every path.
  */
 
 import { type } from "@oh-my-pi/omptype";
@@ -70,7 +72,7 @@ type AuthBrokerResponseSchemaName = keyof typeof RESPONSE_SCHEMAS;
 export interface AuthBrokerClientOptions {
 	/** Base URL (e.g. `https://broker.tailnet:8765`). Trailing slashes are trimmed. */
 	url: string;
-	/** Bearer token used for everything except `healthz`. */
+	/** Bearer token. `healthz` sends it only when non-empty; every other endpoint requires it. */
 	token: string;
 	/** Per-request timeout in milliseconds. Default 10s. */
 	timeoutMs?: number;
@@ -134,7 +136,7 @@ export class AuthBrokerClient {
 	healthz(signal?: AbortSignal): Promise<HealthzResponse> {
 		return this.#request<HealthzResponse>("GET", "/v1/healthz", {
 			schema: "healthzResponseSchema",
-			auth: false,
+			auth: this.#token.length > 0,
 			signal,
 		});
 	}
