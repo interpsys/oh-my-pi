@@ -5133,6 +5133,14 @@ export class AgentSession implements SettingsScope {
 					return;
 				}
 			}
+			// Antigravity's Gemini route rejects some request bodies with a transient bare
+			// 400 INVALID_ARGUMENT that resending the same body repeats; continue on the same
+			// model with a changed body before the generic retry or the fallback chain sees it.
+			if (!requestBodyTimeoutTerminal && (await this.#recovery.handleAntigravityInvalidArgumentStop(msg))) {
+				maintenanceRoute("antigravity-invalid-argument-continued");
+				await emitAgentEndNotification({ willContinue: true });
+				return;
+			}
 			const resumeResolvedStreamStall = resolvedInterruptedToolTurn === "stream-stall";
 			if (!requestBodyTimeoutTerminal && (resumeResolvedStreamStall || this.#recovery.isRetryableError(msg))) {
 				const didRetry = await this.#recovery.handleRetryableError(
