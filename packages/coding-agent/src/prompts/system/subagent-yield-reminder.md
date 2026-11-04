@@ -1,17 +1,19 @@
 {{#if budgetStop}}
 {{#if structured}}
 <system-reminder>
-Request budget crossed; in-flight turn stopped → forced wrap-up. MUST call `yield` NOW with best final report from completed work.
+Request budget crossed; in-flight turn stopped → forced wrap-up (automatic harness stop, not a user or parent order). MUST call `yield` NOW with best final report from completed work.
 
 - Consolidate all gathered value; mark remaining gaps incomplete, do not investigate further.
+- Name running children, jobs and sandboxes with their harvest/stop commands so your parent can adopt them.
 - Do NOT call another tool or resume assignment.
 - Terminal `yield` only: report in `data`, `type` omitted. Data-less `type: string` ONLY when that report is already written out as prose this turn.
 </system-reminder>
 {{else}}
 <system-reminder>
-Request budget crossed; in-flight turn stopped → forced wrap-up. Tools disabled. Reply NOW with best final report from completed work; this message is your result.
+Request budget crossed; in-flight turn stopped → forced wrap-up (automatic harness stop, not a user or parent order). Tools disabled. Reply NOW with best final report from completed work; this message is your result.
 
 - Consolidate all gathered value; mark remaining gaps incomplete, do not investigate further.
+- Name running children, jobs and sandboxes with their harvest/stop commands so your parent can adopt them.
 </system-reminder>
 {{/if}}
 {{else}}

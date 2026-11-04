@@ -28,7 +28,7 @@ import { createSessionDefaults } from "../helpers/session-defaults";
 
 interface SteerCall {
 	content: string;
-	options?: { deliverAs?: "steer" | "followUp" | "aside" };
+	options?: { deliverAs?: "steer" | "followUp" | "aside"; attribution?: "user" | "agent" };
 }
 
 interface FakeSessionConfig {
@@ -236,6 +236,15 @@ describe("runSubprocess request guards", () => {
 		expect(handle.steerCalls[0].content).toContain("[budget notice]");
 		expect(handle.steerCalls[0].content).toContain("4 requests");
 		expect(handle.steerCalls[0].options?.deliverAs).toBe("steer");
+		// The notice is marked as an automatic harness message, not a user or
+		// parent order, and must not prompt the child to cancel its own work.
+		expect(handle.steerCalls[0].content.startsWith('<system-notice source="harness" kind="request-budget">')).toBe(
+			true,
+		);
+		expect(handle.steerCalls[0].content).toContain("not from the user or your parent");
+		expect(handle.steerCalls[0].content).toContain("Do not cancel children");
+		expect(handle.steerCalls[0].content).toContain("at 6 it is force-stopped");
+		expect(handle.steerCalls[0].options).toEqual({ deliverAs: "steer", attribution: "agent" });
 	});
 
 	it("injects the steering notice by default when the soft request budget is crossed", async () => {
@@ -291,7 +300,7 @@ describe("runSubprocess request guards", () => {
 		expect(result.aborted).toBe(false);
 		expect(handle.steerCalls.length).toBe(1);
 		expect(handle.steerCalls[0].content).toContain("used 4 requests");
-		expect(handle.steerCalls[0].content).toContain("soft budget: 4");
+		expect(handle.steerCalls[0].content).toContain("soft budget 4");
 	});
 
 	it("still force-stops at 1.5x the soft budget when budget notices are disabled", async () => {
