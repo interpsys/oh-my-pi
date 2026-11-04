@@ -1301,7 +1301,20 @@ export function buildRequest(
 	accountKey?: string,
 ): CloudCodeAssistRequest {
 	const systemPrompts = normalizeSystemPrompts(context.systemPrompt);
-	const contents = convertMessages(model, context);
+	// Antigravity's Gemini routes reject some replayed thought signatures with a
+	// bare `400 INVALID_ARGUMENT` ("Request contains an invalid argument.") once
+	// the request's current turn holds a signed model step. The rejected
+	// signatures sit on steps that open a turn: after user text or images (a
+	// prompt, a compaction summary, an injected clock or reminder), not after
+	// function responses alone. Which such signature fails depends on the exact
+	// text before it (re-timestamping one injected clock line turns a failing
+	// captured body into a 200), so no narrower request-shape rule predicts it.
+	// Captured failing bodies all succeed with those steps unsigned; tool-loop
+	// steps keep their signatures, so the reasoning chain across consecutive
+	// tool calls survives.
+	const contents = convertMessages(model, context, {
+		unsignedTurnOpeningSteps: isAntigravity && model.identity.class === "gemini",
+	});
 	const generationConfig: CloudCodeAssistRequest["request"]["generationConfig"] = {};
 	if (options.temperature !== undefined) {
 		generationConfig.temperature = options.temperature;
