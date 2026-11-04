@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Headless runs (`-p`, `--mode text|json`, non-terminal stdin) now share a machine-wide cap: each waits for one of `headless.maxConcurrent` (default 12) slot locks under `~/.omp/run/headless-gate` before its session starts; `OMP_HEADLESS_SLOTS` can only lower the cap, and a run whose `--max-time` passes while waiting exits 75
+
 ### Fixed
 
 - `omp auth-broker status` no longer reports 401 against brokers that require a bearer on `/v1/healthz`, and failures now report `reason` (`auth_rejected`, `unreachable`, `http_error`) with the HTTP status and broker error code
