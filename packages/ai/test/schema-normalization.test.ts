@@ -512,6 +512,24 @@ describe("normalizeSchemaForGoogle", () => {
 		expect(normalized.maxLength).toBeUndefined();
 		expect(normalized.description).toBe('ID\n\n{pattern: "^\\\\d+$", minLength: 1, maxLength: 8}');
 	});
+
+	it("drops empty-string enum members and an enum left empty", () => {
+		expect(normalizeSchemaForGoogle({ type: "string", enum: ["executed", "requested", "runtime", ""] })).toEqual({
+			type: "string",
+			enum: ["executed", "requested", "runtime"],
+		});
+		expect(normalizeSchemaForGoogle({ type: "string", enum: [""] })).toEqual({ type: "string" });
+		expect(normalizeSchemaForGoogle({ type: "string", const: "" })).toEqual({ type: "string" });
+		// Control: only the exact empty string is dropped.
+		expect(normalizeSchemaForGoogle({ type: "string", enum: [" ", "a"] })).toEqual({
+			type: "string",
+			enum: [" ", "a"],
+		});
+	});
+
+	it("drops a not over an empty-string enum instead of inverting it", () => {
+		expect(normalizeSchemaForGoogle({ type: "string", not: { enum: [""] } })).toEqual({ type: "string" });
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -1093,6 +1111,35 @@ describe("normalizeSchemaForCCA", () => {
 		expect(antigravityDeclaration.parametersJsonSchema).toBeUndefined();
 	});
 
+	it("sends no empty-string enum member on the Antigravity Gemini, CCA Claude, or Google paths", () => {
+		type EnumProperties = { properties: Record<string, { enum?: unknown[] }> };
+		type Declaration = { parameters?: EnumProperties; parametersJsonSchema?: EnumProperties };
+		const tools: Tool[] = [
+			{
+				name: "scorecard",
+				description: "Scorecard query",
+				parameters: {
+					type: "object",
+					properties: { model_basis: { type: "string", enum: ["executed", "requested", "runtime", ""] } },
+				} as TJsonSchema,
+			},
+		];
+		const expected = ["executed", "requested", "runtime"];
+
+		const context: Context = { messages: [{ role: "user", content: "hello", timestamp: 0 }], tools };
+		const antigravityGemini = buildRequest(createGoogleCliModel("gemini-2.5-pro"), context, "project", {}, true)
+			.request.tools?.[0]?.functionDeclarations[0] as Declaration;
+		expect(antigravityGemini.parameters?.properties.model_basis.enum).toEqual(expected);
+
+		const ccaClaude = convertTools(tools, createGoogleCliModel("claude-sonnet-4-5"))?.[0]
+			?.functionDeclarations[0] as Declaration;
+		expect(ccaClaude.parameters?.properties.model_basis.enum).toEqual(expected);
+
+		const google = convertTools(tools, createGoogleCliModel("gemini-2.5-pro"))?.[0]
+			?.functionDeclarations[0] as Declaration;
+		expect(google.parametersJsonSchema?.properties.model_basis.enum).toEqual(expected);
+	});
+
 	it("does not retain stale required keys after an object-union anyOf merge", () => {
 		const prepared = normalizeSchemaForCCA({
 			required: ["a"],
@@ -1227,6 +1274,20 @@ describe("normalizeSchemaForCCA", () => {
 		expect(normalized).toEqual({
 			type: "string",
 			description: "pr number, url, or branch",
+		});
+	});
+
+	it("drops empty-string enum members and an enum left empty", () => {
+		expect(normalizeSchemaForCCA({ type: "string", enum: ["a", ""] })).toEqual({ type: "string", enum: ["a"] });
+		expect(normalizeSchemaForCCA({ type: "object", properties: { x: { type: "string", enum: [] } } })).toEqual({
+			type: "object",
+			properties: { x: { type: "string" } },
+		});
+		// Controls: non-string enums and a property named `enum` pass through.
+		expect(normalizeSchemaForCCA({ type: "number", enum: [1, 2] })).toEqual({ type: "number", enum: [1, 2] });
+		expect(normalizeSchemaForCCA({ type: "object", properties: { enum: { type: "string" } } })).toEqual({
+			type: "object",
+			properties: { enum: { type: "string" } },
 		});
 	});
 });
@@ -1706,5 +1767,25 @@ describe("normalizeSchemaForFactoryDroid", () => {
 		}) as { properties: Record<string, unknown>; required: string[] };
 		expect(Object.keys(normalized.properties).sort()).toEqual(["mode", "x", "y"]);
 		expect(normalized.required).toEqual(["mode", "x", "y"]);
+	});
+
+	it("drops empty-string enum members and an enum left empty", () => {
+		expect(
+			normalizeSchemaForFactoryDroid({
+				type: "object",
+				properties: {
+					model_basis: { type: "string", enum: ["executed", "requested", "runtime", ""] },
+					only: { type: "string", enum: [""] },
+					literal: { const: "" },
+				},
+			}),
+		).toEqual({
+			type: "object",
+			properties: {
+				model_basis: { type: "string", enum: ["executed", "requested", "runtime"] },
+				only: { type: "string" },
+				literal: { type: "string" },
+			},
+		});
 	});
 });

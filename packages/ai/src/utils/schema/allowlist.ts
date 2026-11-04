@@ -247,6 +247,13 @@ function copyFactoryDroidSchema(node: unknown): JsonObject | undefined {
 		else if ("items" in out) out.type = "array";
 		else if ("enum" in out) out.type = "string";
 	}
+	// Google's Schema proto rejects empty enum values (`enum[i]: cannot be empty`);
+	// drop them, and the enum once none remain (the inferred `type` stays).
+	if (Array.isArray(out.enum)) {
+		const members = out.enum.filter(value => value !== "");
+		if (members.length === 0) delete out.enum;
+		else if (members.length !== out.enum.length) out.enum = members;
+	}
 	return out;
 }
 

@@ -5,6 +5,7 @@
 ### Fixed
 
 - `omp auth-broker status` no longer reports 401 against brokers that require a bearer on `/v1/healthz`, and failures now report `reason` (`auth_rejected`, `unreachable`, `http_error`) with the HTTP status and broker error code
+- An Antigravity Gemini `400 INVALID_ARGUMENT` ("Request contains an invalid argument.") on a turn with no output now continues on the same model with a reminder, up to 3 consecutive times, instead of switching to the fallback chain or stopping the session
 
 ## [18.14.1] - 2026-10-31
 
