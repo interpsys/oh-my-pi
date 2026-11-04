@@ -40,6 +40,7 @@ import * as commandsSettings from "../commands/settings";
 import * as streamSettings from "../stream/settings";
 import * as commitSettings from "../commit/settings";
 import * as cliGcSettings from "../cli/gc-settings";
+import * as cliHeadlessSettings from "../cli/headless-settings";
 import * as telemetrySettings from "../telemetry-settings";
 import * as spotlightSettings from "../spotlight/settings";
 
@@ -80,6 +81,7 @@ const DOMAINS: readonly Readonly<Record<string, unknown>>[] = [
 	commitSettings,
 	cliGcSettings,
 	spotlightSettings,
+	cliHeadlessSettings,
 ];
 
 /** Domains listed immediately before `before` (a setting of a DOMAINS entry) instead of in DOMAINS order. */
