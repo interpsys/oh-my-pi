@@ -356,6 +356,7 @@
 ### Fixed
 
 - Python eval cells compile as `<cell-N>` and register their source, so `inspect.getsource` works on functions defined in earlier cells and tracebacks show the source lines
+- An Antigravity Gemini `400 INVALID_ARGUMENT` ("Request contains an invalid argument.") on a turn with no output now continues on the same model with a reminder, up to 3 consecutive times, instead of switching to the fallback chain or stopping the session
 
 ## [18.16.0] - 2026-11-02
 

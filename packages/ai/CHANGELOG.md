@@ -76,6 +76,7 @@
 ### Fixed
 
 - Fixed tool calls served through the Anthropic auth gateway losing their inputs when arguments arrive only at the end of the call.
+- Fixed Gemini tool schemas on the Google, Cloud Code Assist/Antigravity and Factory Droid routes keeping empty-string `enum` members, which Gemini rejects with `enum[i]: cannot be empty`; the members are dropped, and an `enum` left empty is omitted.
 
 ## [18.16.0] - 2026-11-02
 

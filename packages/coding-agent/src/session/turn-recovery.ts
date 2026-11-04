@@ -32,6 +32,7 @@ import { formatModelStringWithRouting, resolveModelOverride } from "../config/mo
 import type { Settings } from "../config/settings";
 import type { RetryErrorUpdate } from "../extensibility/shared-events";
 import { isEvalStateContext } from "../eval/state";
+import antigravityInvalidArgumentRetryTemplate from "../prompts/system/antigravity-invalid-argument-retry.md" with { type: "text" };
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
 import malformedFunctionCallRetryTemplate from "../prompts/system/malformed-function-call-retry.md" with { type: "text" };
 import streamStallContinueTemplate from "../prompts/system/stream-stall-continue.md" with { type: "text" };
@@ -108,6 +109,7 @@ const EMPTY_STOP_MAX_RETRIES = 3;
 const MALFORMED_FUNCTION_CALL_MAX_RETRIES = 3;
 const STREAM_STALL_CONTINUE_MAX_RETRIES = 3;
 const GENERIC_ABORT_MAX_RETRIES = 2;
+const ANTIGRAVITY_INVALID_ARGUMENT_MAX_RETRIES = 3;
 const SIBLING_UNBLOCK_BUFFER_MS = 1_000;
 const NON_WHITESPACE_RE = /\S/;
 const USAGE_PREFLIGHT_BLOCKED_PREFIX = "Usage preflight blocked:";
@@ -415,6 +417,7 @@ export class TurnRecovery {
 	#unexpectedStopRetryCount = 0;
 	#malformedFunctionCallRetryCount = 0;
 	#streamStallContinueCount = 0;
+	#antigravityInvalidArgumentRetryCount = 0;
 	#acceptTerminalEmptyStopForPrompt = false;
 	// Three fields sit near the word "serve" and are deliberately distinct:
 	// `#activeRetryFallback.served` gates the one-shot `retry_fallback_succeeded`
@@ -553,6 +556,7 @@ export class TurnRecovery {
 		this.#unexpectedStopRetryCount = 0;
 		this.#malformedFunctionCallRetryCount = 0;
 		this.#streamStallContinueCount = 0;
+		this.#antigravityInvalidArgumentRetryCount = 0;
 		this.#acceptTerminalEmptyStopForPrompt = false;
 		this.#activeFallbackCreditRedemption = undefined;
 	}
@@ -591,6 +595,8 @@ export class TurnRecovery {
 		// shake-and-retry. Back-to-back timeouts never reach this point, so the
 		// one-shot bound on an unchanged-request loop is unaffected.
 		this.#requestBodyReadTimeoutRecoveryPromptSequence = undefined;
+		// Likewise the Antigravity INVALID_ARGUMENT cap bounds consecutive rejections only.
+		this.#antigravityInvalidArgumentRetryCount = 0;
 		const model = this.#host.model();
 		if (model) {
 			const level = this.#host.thinkingLevel();
@@ -708,6 +714,74 @@ export class TurnRecovery {
 		});
 		this.#host.scheduleAgentContinue({
 			source: "malformed-function-call-retry",
+			generation: this.#host.promptGeneration(),
+		});
+		return true;
+	}
+
+	/**
+	 * Continue on the same model after Antigravity's Gemini route rejects a request
+	 * with a bare `400 INVALID_ARGUMENT` ("Request contains an invalid argument.")
+	 * before any output. The rejection depends on the exact request body: resending
+	 * it fails again, while a body with one more turn succeeds on the same model.
+	 * Without this, retry and the fallback chain switched models (or stopped the
+	 * session) on a transient rejection. Record the empty turn, drop it from active
+	 * context, append a developer reminder and continue after a backoff. Honors
+	 * `retry.enabled`; bounded by consecutive rejections, past the cap the generic
+	 * retry and hard-error fallback run as before.
+	 */
+	async handleAntigravityInvalidArgumentStop(message: AssistantMessage): Promise<boolean> {
+		const model = this.#host.model();
+		const errorMessage = message.errorMessage ?? "";
+		const rejected =
+			model?.provider === "google-antigravity" &&
+			model.identity.class === "gemini" &&
+			isEmptyErrorTurn(message) &&
+			errorMessage.includes("Cloud Code Assist API error (400)") &&
+			errorMessage.includes("INVALID_ARGUMENT") &&
+			errorMessage.includes("Request contains an invalid argument.");
+		if (!rejected) {
+			this.#antigravityInvalidArgumentRetryCount = 0;
+			return false;
+		}
+		if (!this.autoRetryEnabled || this.#host.abortInProgress() || this.#host.isDisposed()) return false;
+
+		this.#antigravityInvalidArgumentRetryCount++;
+		const attempt = this.#antigravityInvalidArgumentRetryCount;
+		if (attempt > ANTIGRAVITY_INVALID_ARGUMENT_MAX_RETRIES) {
+			logger.warn("Antigravity kept rejecting the request with INVALID_ARGUMENT past retry cap", {
+				attempts: attempt - 1,
+				model: message.model,
+				provider: message.provider,
+			});
+			this.#antigravityInvalidArgumentRetryCount = 0;
+			return false;
+		}
+
+		logger.info("Antigravity rejected the request with INVALID_ARGUMENT; continuing on the same model", {
+			attempt,
+			model: message.model,
+			provider: message.provider,
+		});
+		await this.#persistTerminalEmptyErrorTurn(message);
+		this.removeAssistantMessageFromActiveContext(message, "antigravity-invalid-argument-continue");
+		this.#host.agent.appendMessage({
+			role: "developer",
+			content: [
+				{
+					type: "text",
+					text: prompt.render(antigravityInvalidArgumentRetryTemplate, {
+						retryCount: attempt,
+						maxRetries: ANTIGRAVITY_INVALID_ARGUMENT_MAX_RETRIES,
+					}),
+				},
+			],
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
+		this.#host.scheduleAgentContinue({
+			source: "antigravity-invalid-argument-retry",
+			delayMs: calculateRetryBackoffDelayMs(cfgRetry.get(this.#host.settings).baseDelayMs, attempt),
 			generation: this.#host.promptGeneration(),
 		});
 		return true;
