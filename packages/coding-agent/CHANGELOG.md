@@ -344,6 +344,7 @@
 ### Added
 
 - Orb standalone builds export `BUILD_INFO` with the base version, fork variant and compiled source commit; `omp --version` shows the fork marker and short commit.
+- The native judgment answer cache (`~/.omp/cache/judgment-cache.db`) is capped by `OMP_JUDGMENT_CACHE_MAX_BYTES` (default 2 GiB): above it the oldest judged states are pruned with their answers and the freed space is returned to the filesystem. An existing cache is rebuilt once with incremental auto-vacuum the first time it is pruned
 
 ### Changed
 
