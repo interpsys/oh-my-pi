@@ -827,8 +827,8 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					: responseAbortController.signal;
 				const onSseEvent = options?.onSseEvent;
 				const chunks = iterateWithIdleTimeout(
-					// Attach the observer only when a diagnostic listener exists: any
-					// observer turns on per-line raw capture in `readSseJson`.
+					// Retain bounded raw evidence until output arrives; reuse the reader's
+					// parsed chunk below instead of decoding every frame a second time.
 					readSseJson<CloudCodeAssistResponseChunk>(activeResponse.body, responseSignal, event => {
 						onSseEvent?.({ event: event.event ?? "message", data: event.data, raw: [...event.raw] }, model);
 						if (!captureActive) return;
@@ -846,20 +846,11 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 							capturedOmittedBytes += eventBytes;
 							return;
 						}
-						let parsed: unknown;
-						if (event.data !== "" && event.data !== "[DONE]") {
-							try {
-								parsed = JSON.parse(event.data);
-							} catch {
-								// Keep raw text when JSON.parse fails.
-							}
-						}
 						capturedBytes += eventBytes;
 						capturedRawEvents.push({
 							event: event.event,
 							data: event.data,
 							raw: rawLines,
-							...(parsed !== undefined ? { parsed } : {}),
 						});
 					}),
 					{
@@ -874,6 +865,8 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				for await (const chunk of chunks) {
 					if (captureActive && capturedRawChunks.length < RAW_EMPTY_RESPONSE_MAX_EVENTS && !capturedTruncated) {
 						capturedRawChunks.push(chunk);
+						const rawEvent = capturedRawEvents.at(-1);
+						if (rawEvent) rawEvent.parsed = chunk;
 					}
 					if (chunk.error) {
 						const detail =

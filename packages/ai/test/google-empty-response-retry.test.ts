@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -754,6 +754,28 @@ describe("Google empty-response retry (Cloud Code Assist path)", () => {
 		const roots: string[] = [];
 		afterEach(async () => {
 			await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true })));
+		});
+
+		it.each(["", "Done"])("parses each wire frame once while capturing diagnostics (%s)", async text => {
+			const raw = JSON.stringify(ccaChunk(text));
+			const parse = spyOn(JSON, "parse");
+			let fetches = 0;
+			try {
+				await streamGoogleGeminiCli(cliModel, context, {
+					apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
+					fetch: async () => {
+						fetches++;
+						return withResponseUrl(
+							new Response(`data: ${raw}\n\n`, { headers: { "content-type": "text/event-stream" } }),
+							"https://example.com",
+						);
+					},
+				}).result();
+				expect(fetches).toBe(text ? 1 : 3);
+				expect(parse.mock.calls.filter(([input]) => input === raw)).toHaveLength(fetches);
+			} finally {
+				parse.mockRestore();
+			}
 		});
 
 		it.each([undefined, "STOP"] as const)(
