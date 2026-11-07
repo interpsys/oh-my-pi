@@ -648,6 +648,10 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 			// Failover remains safe only while `started` is false.
 			let sawFinishReason = false;
 			let lastResponseId: string | undefined;
+			let lastFinishReason: string | undefined;
+			let lastPromptFeedback: NonNullable<CloudCodeAssistResponseChunk["response"]>["promptFeedback"];
+			let lastUsageMetadata: NonNullable<CloudCodeAssistResponseChunk["response"]>["usageMetadata"];
+			let candidateCount = 0;
 			const ensureStarted = () => {
 				if (!started) {
 					if (!firstTokenTime) firstTokenTime = performance.now();
@@ -670,6 +674,10 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				output.errorMessage = undefined;
 				output.timestamp = Date.now();
 				sawFinishReason = false;
+				lastFinishReason = undefined;
+				lastPromptFeedback = undefined;
+				lastUsageMetadata = undefined;
+				candidateCount = 0;
 			};
 
 			const streamResponse = async (
@@ -819,6 +827,9 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					const responseData = chunk.response;
 					if (!responseData) continue;
 					if (responseData.responseId) lastResponseId = responseData.responseId;
+					if (responseData.candidates) candidateCount = responseData.candidates.length;
+					if (responseData.promptFeedback) lastPromptFeedback = responseData.promptFeedback;
+					if (responseData.usageMetadata) lastUsageMetadata = responseData.usageMetadata;
 					if (!responseData.candidates?.length && responseData.promptFeedback?.blockReason) {
 						const detail = responseData.promptFeedback.blockReasonMessage;
 						throw new AIError.ProviderResponseError(
@@ -903,6 +914,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					}
 
 					if (candidate?.finishReason) {
+						lastFinishReason = candidate.finishReason;
 						sawFinishReason = true;
 						const mapped = mapStopReasonString(candidate.finishReason);
 						// Only let a trailing tool call upgrade benign finishes; error finishes
@@ -1073,15 +1085,24 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 
 					if (!receivedContent) {
 						const thoughtOnly = hasThinkingOutput();
-						throw new AIError.ProviderResponseError(
-							thoughtOnly
-								? "Cloud Code Assist API returned a thought-only response without final output"
-								: "Cloud Code Assist API returned an empty response",
-							{
-								provider: model.provider,
-								kind: thoughtOnly ? "empty-output" : "empty-body",
-							},
-						);
+						const description = thoughtOnly
+							? "Cloud Code Assist API returned a thought-only response without final output"
+							: "Cloud Code Assist API returned an empty response";
+						const diagnostics = JSON.stringify({
+							candidates: candidateCount,
+							finishReason: lastFinishReason ?? null,
+							promptFeedback: lastPromptFeedback ?? null,
+							usageMetadata: lastUsageMetadata ?? null,
+						});
+						// Local empty-stream retries are already spent. Keep an earlier
+						// endpoint retryable only to reach the next endpoint; after the
+						// last one, consult the session's hard-error fallback rather than
+						// multiplying this budget by retry.maxRetries.
+						const emptyKind = isLastEndpoint ? "output" : "empty-body";
+						throw new AIError.ProviderResponseError(`${description}: ${diagnostics}`, {
+							provider: model.provider,
+							kind: thoughtOnly ? "empty-output" : emptyKind,
+						});
 					}
 
 					if (options?.signal?.aborted) {

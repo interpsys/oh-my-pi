@@ -330,6 +330,35 @@ describe("Google empty-response retry (Cloud Code Assist path)", () => {
 		]);
 	});
 
+	it.each([undefined, "STOP"])("does not restart exhausted empty retries (finishReason=%s)", async finishReason => {
+		let calls = 0;
+		const usageMetadata = { promptTokenCount: 146282, candidatesTokenCount: 0, totalTokenCount: 146282 };
+		const fetchMock: FetchImpl = async () => {
+			calls++;
+			return withResponseUrl(
+				sse({
+					response: {
+						candidates: finishReason ? [{ content: { role: "model", parts: [] }, finishReason }] : [],
+						usageMetadata,
+					},
+				}),
+				"https://example.com",
+			);
+		};
+		const result = await streamGoogleGeminiCli(cliModel, context, {
+			apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
+			fetch: fetchMock,
+		}).result();
+
+		expect(calls).toBe(3);
+		expect(result.stopReason).toBe("error");
+		expect(AIError.retriable(result.errorId ?? 0)).toBe(false);
+		expect(result.errorMessage).toContain("empty response");
+		expect(result.errorMessage).toContain(`"finishReason":${JSON.stringify(finishReason ?? null)}`);
+		expect(result.errorMessage).toContain(`"usageMetadata":${JSON.stringify(usageMetadata)}`);
+		expect(result.errorMessage).toContain('"promptFeedback":null');
+	});
+
 	it("accepts an empty STOP when silence is a valid caller result", async () => {
 		let calls = 0;
 		const fetchMock: FetchImpl = async () => {
