@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { streamGoogle } from "@oh-my-pi/pi-ai/providers/google";
 import { streamGoogleGeminiCli } from "@oh-my-pi/pi-ai/providers/google-gemini-cli";
 import { streamGoogleVertex } from "@oh-my-pi/pi-ai/providers/google-vertex";
 import type { AssistantMessageEvent, Context, FetchImpl, Model } from "@oh-my-pi/pi-ai/types";
+import { RAW_EMPTY_RESPONSE_MAX_EVENTS, stripRawHttpRequestDiagnostics } from "@oh-my-pi/pi-ai/utils/http-inspector";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
 // A Gemini turn that finishes with `finishReason: STOP` but carries only an empty text part —
@@ -778,5 +782,226 @@ describe("Google empty-response retry (Cloud Code Assist path)", () => {
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toContain("Generation failed with finish reason: SAFETY");
 		expect(calls).toBe(1);
+	});
+
+	describe("raw empty-response diagnostic dump", () => {
+		const roots: string[] = [];
+		afterEach(async () => {
+			await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true })));
+		});
+
+		it.each([undefined, "STOP"] as const)(
+			"persists raw SSE events and unknown metadata after retries exhaust (finishReason=%s)",
+			async finishReason => {
+				const dumpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-cca-empty-"));
+				roots.push(dumpDir);
+				const rawFixture = {
+					response: {
+						candidates: finishReason
+							? [{ content: { role: "model", parts: [] }, finishReason, groundingMetadata: { step: 7 } }]
+							: [],
+						usageMetadata: { promptTokenCount: 146282, candidatesTokenCount: 0, totalTokenCount: 146282 },
+						modelVersion: "gemini-4-argon-001",
+						responseId: "resp_empty_99",
+						unclassifiedBackendDetail: { zeroOutputReason: "BACKEND_SILENT_DROP", retryableHint: false },
+					},
+					traceId: "trace-xyz-123",
+					vendorEnvelopeExtra: { region: "us-central1" },
+				};
+
+				const fetchMock: FetchImpl = async input => {
+					const endpoint = endpointFromInput(input);
+					const res = new Response(`event: message\ndata: ${JSON.stringify(rawFixture)}\n\n`, {
+						status: 200,
+						headers: {
+							"content-type": "text/event-stream",
+							"x-goog-api-key": "should-be-redacted",
+						},
+					});
+					return withResponseUrl(res, endpoint);
+				};
+
+				const result = await streamGoogleGeminiCli(antigravityModel, context, {
+					apiKey: JSON.stringify({ token: "secret-oauth-token-xyz", projectId: "proj-123" }),
+					antigravityEndpointMode: "auto",
+					emptyResponseDumpDir: dumpDir,
+					fetch: fetchMock,
+				}).result();
+
+				expect(result.stopReason).toBe("error");
+				expect(result.errorMessage).toContain("Cloud Code Assist API returned an empty response:");
+				expect(result.errorMessage).toContain(`\nraw-empty-response=${dumpDir}/`);
+				expect(stripRawHttpRequestDiagnostics(result.errorMessage!)).not.toContain("raw-empty-response=");
+
+				const files = (await fs.readdir(dumpDir)).filter(f => f.endsWith(".json"));
+				expect(files).toHaveLength(1);
+				const dumpPath = path.join(dumpDir, files[0]);
+				const rawText = await fs.readFile(dumpPath, "utf8");
+				expect(rawText).not.toContain("secret-oauth-token-xyz");
+				expect(rawText).not.toContain("should-be-redacted");
+
+				const parsed = JSON.parse(rawText);
+				expect(parsed.provider).toBe("google-antigravity");
+				expect(parsed.api).toBe("google-gemini-cli");
+				expect(parsed.model).toBe(antigravityModel.id);
+				expect(parsed.endpoint).toBe(ANTIGRAVITY_SANDBOX_ENDPOINT);
+				expect(parsed.status).toBe(200);
+				expect(parsed.headers["x-goog-api-key"]).toBe("[redacted]");
+				expect(parsed.body).toBeUndefined();
+				expect(parsed.events).toHaveLength(1);
+				expect(parsed.events[0].parsed).toEqual(rawFixture);
+				expect(parsed.chunks).toEqual([rawFixture]);
+			},
+		);
+
+		it("does not write an empty-response dump on normal text, tool-call, thought-only, or accepted-silence responses", async () => {
+			const dumpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-cca-no-dump-"));
+			roots.push(dumpDir);
+
+			// 1. Normal text output
+			const textRes = await streamGoogleGeminiCli(cliModel, context, {
+				apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
+				emptyResponseDumpDir: dumpDir,
+				fetch: async () => withResponseUrl(sse(ccaChunk("Hello world")), "https://example.com"),
+			}).result();
+			expect(textRes.stopReason).toBe("stop");
+
+			// 2. Normal tool-call output
+			const toolRes = await streamGoogleGeminiCli(cliModel, context, {
+				apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
+				emptyResponseDumpDir: dumpDir,
+				fetch: async () =>
+					withResponseUrl(
+						sse({
+							response: {
+								candidates: [
+									{
+										content: {
+											parts: [{ functionCall: { name: "lookup", args: { q: "x" }, id: "call_1" } }],
+										},
+										finishReason: "STOP",
+									},
+								],
+							},
+						}),
+						"https://example.com",
+					),
+			}).result();
+			expect(toolRes.stopReason).toBe("toolUse");
+
+			// 3. Explicit accepted silence
+			const silentRes = await streamGoogleGeminiCli(cliModel, context, {
+				apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
+				acceptEmptyResponse: true,
+				emptyResponseDumpDir: dumpDir,
+				fetch: async () => withResponseUrl(sse(ccaChunk("")), "https://example.com"),
+			}).result();
+			expect(silentRes.stopReason).toBe("stop");
+
+			// 4. Thought-only response (not a silent zero-output stream)
+			const thoughtRes = await streamGoogleGeminiCli(cliModel, context, {
+				apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
+				emptyResponseDumpDir: dumpDir,
+				fetch: async () =>
+					withResponseUrl(sse(ccaThinkingOnlyChunk("Thinking without final text")), "https://example.com"),
+			}).result();
+			expect(thoughtRes.stopReason).toBe("error");
+			expect(thoughtRes.errorMessage).not.toContain("raw-empty-response=");
+
+			expect(await fs.readdir(dumpDir)).toEqual([]);
+		});
+
+		it("marks truncation explicitly when an empty stream exceeds the event cap and preserves provider error on write failure", async () => {
+			const dumpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-cca-trunc-"));
+			roots.push(dumpDir);
+			const manyEmptyFrames = Array.from({ length: RAW_EMPTY_RESPONSE_MAX_EVENTS + 5 }, (_, idx) => ({
+				response: {
+					candidates:
+						idx === RAW_EMPTY_RESPONSE_MAX_EVENTS + 4 ? [{ content: { parts: [] }, finishReason: "STOP" }] : [],
+					seq: idx,
+				},
+			}));
+
+			const truncRes = await streamGoogleGeminiCli(cliModel, context, {
+				apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
+				emptyResponseDumpDir: dumpDir,
+				fetch: async () => withResponseUrl(sse(...manyEmptyFrames), "https://example.com"),
+			}).result();
+			expect(truncRes.stopReason).toBe("error");
+			const files = await fs.readdir(dumpDir);
+			expect(files).toHaveLength(1);
+			const saved = JSON.parse(await fs.readFile(path.join(dumpDir, files[0]), "utf8"));
+			expect(saved.truncated).toBe(true);
+			expect(saved.omittedEvents).toBe(5);
+			expect(saved.events).toHaveLength(RAW_EMPTY_RESPONSE_MAX_EVENTS);
+
+			// Write failure control: target is a regular file, not a directory
+			const badTarget = path.join(dumpDir, "not-a-dir");
+			await fs.writeFile(badTarget, "block");
+			const failRes = await streamGoogleGeminiCli(cliModel, context, {
+				apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
+				emptyResponseDumpDir: badTarget,
+				fetch: async () => withResponseUrl(sse(ccaChunk("")), "https://example.com"),
+			}).result();
+			expect(failRes.stopReason).toBe("error");
+			expect(failRes.errorMessage).toContain("Cloud Code Assist API returned an empty response:");
+			expect(failRes.errorMessage).toContain("\nraw-empty-response-save-failed=");
+		});
+
+		it("captures raw SSE payload over a real local HTTP server when an empty stream exhausts retries", async () => {
+			const dumpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-cca-http-live-"));
+			roots.push(dumpDir);
+			const liveFixture = {
+				response: {
+					candidates: [],
+					usageMetadata: { promptTokenCount: 146282, candidatesTokenCount: 0, totalTokenCount: 146282 },
+					modelVersion: "gemini-4-argon",
+					responseId: "resp_live_http_empty",
+					unclassifiedDiagnostics: { reason: "ZERO_CANDIDATES_HTTP_200", backendNode: "cca-edge-04" },
+				},
+				rawTopLevelField: "preserved-over-wire",
+			};
+			let serverHits = 0;
+			const server = Bun.serve({
+				port: 0,
+				fetch(req) {
+					serverHits += 1;
+					const url = new URL(req.url);
+					expect(url.pathname).toBe("/v1internal:streamGenerateContent");
+					return new Response(`event: message\ndata: ${JSON.stringify(liveFixture)}\n\n`, {
+						status: 200,
+						headers: {
+							"content-type": "text/event-stream",
+							"x-goog-api-key": "live-server-secret",
+						},
+					});
+				},
+			});
+			try {
+				const baseOrigin = `http://127.0.0.1:${server.port}`;
+				const res = await streamGoogleGeminiCli(antigravityModel, context, {
+					apiKey: JSON.stringify({ token: "live-bearer-secret", projectId: "proj-live" }),
+					antigravityEndpointMode: "production",
+					emptyResponseDumpDir: dumpDir,
+					fetch: (input, init) => {
+						const target = String(input).replace(ANTIGRAVITY_DAILY_ENDPOINT, baseOrigin);
+						return fetch(target, init);
+					},
+				}).result();
+
+				expect(serverHits).toBe(3);
+				expect(res.stopReason).toBe("error");
+				expect(res.errorMessage).toContain(`\nraw-empty-response=${dumpDir}/`);
+				const files = await fs.readdir(dumpDir);
+				expect(files).toHaveLength(1);
+				const saved = JSON.parse(await fs.readFile(path.join(dumpDir, files[0]), "utf8"));
+				expect(saved.provider).toBe("google-antigravity");
+				expect(saved.model).toBe(antigravityModel.id);
+				expect(saved.headers["x-goog-api-key"]).toBe("[redacted]");
+				expect(saved.events[0].parsed).toEqual(liveFixture);
+			} finally {
+				server.stop(true);
+			}
+		});
 	});
 });
