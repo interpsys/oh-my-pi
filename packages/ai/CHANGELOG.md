@@ -75,6 +75,7 @@
 - Provider retries no longer retry responses explicitly marked non-retryable
 ### Fixed
 
+- Cloud Code Assist empty responses now retain finish, block and token-usage diagnostics; once local empty-stream retries and endpoint failover are exhausted, sessions consult configured model fallbacks or surface the error instead of restarting the same retry budget.
 - Fixed tool calls served through the Anthropic auth gateway losing their inputs when arguments arrive only at the end of the call.
 - Fixed Gemini tool schemas on the Google, Cloud Code Assist/Antigravity and Factory Droid routes keeping empty-string `enum` members, which Gemini rejects with `enum[i]: cannot be empty`; the members are dropped, and an `enum` left empty is omitted.
 

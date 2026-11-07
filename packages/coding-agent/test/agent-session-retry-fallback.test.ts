@@ -17,6 +17,7 @@ import {
 } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
+import { streamGoogleGeminiCli } from "@oh-my-pi/pi-ai/providers/google-gemini-cli";
 import { CodexApiError } from "@oh-my-pi/pi-ai/providers/openai-codex/response-handler";
 import { buildParams } from "@oh-my-pi/pi-ai/providers/openai-responses";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
@@ -9356,6 +9357,136 @@ describe("AgentSession retry fallback", () => {
 			);
 
 			expect(requestedModels).toEqual([primary, fallbackSelector]);
+		});
+	});
+
+	describe("Cloud Code Assist exhausted empty responses", () => {
+		const fallbackSelector = "openai/gpt-4o-mini";
+		const usageMetadata = { promptTokenCount: 146282, candidatesTokenCount: 0, totalTokenCount: 146282 };
+		const savedAntigravityVersion = process.env.PI_AI_ANTIGRAVITY_VERSION;
+
+		beforeAll(() => {
+			authStorage.keys.setRuntime("google-antigravity", JSON.stringify({ token: "token", projectId: "proj-123" }));
+		});
+
+		afterAll(() => {
+			authStorage.keys.removeRuntime("google-antigravity");
+		});
+
+		beforeEach(() => {
+			process.env.PI_AI_ANTIGRAVITY_VERSION = "2.19.1";
+		});
+
+		afterEach(() => {
+			if (savedAntigravityVersion === undefined) delete process.env.PI_AI_ANTIGRAVITY_VERSION;
+			else process.env.PI_AI_ANTIGRAVITY_VERSION = savedAntigravityVersion;
+		});
+
+		async function runExhaustedEmptySession(fallbackChains?: Record<string, string[]>) {
+			const baseModel = getBundledModel("google-antigravity", "gemini-4-argon");
+			if (!baseModel) throw new Error("Expected bundled google-antigravity/gemini-4-argon to exist");
+			const endpoint = "https://custom-cca.example.com";
+			const model: Model<"google-gemini-cli"> = { ...baseModel, baseUrl: endpoint };
+			const primary = `${model.provider}/${model.id}`;
+			const mock = createMockModel();
+			const requestedModels: string[] = [];
+			const requestContexts: Message[][] = [];
+			const priorTaskMessage: Message = {
+				role: "user",
+				content: "Prior task context that must remain intact",
+				timestamp: 1,
+			};
+			let fetchCalls = 0;
+
+			const agent = new Agent({
+				getApiKey: requested =>
+					requested.provider === "google-antigravity"
+						? JSON.stringify({ token: "token", projectId: "proj-123" })
+						: `${requested.provider}-test-key`,
+				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [priorTaskMessage] },
+				convertToLlm,
+				streamFn: (requested, context, options) => {
+					const selector = `${requested.provider}/${requested.id}`;
+					requestedModels.push(selector);
+					requestContexts.push([...context.messages]);
+					if (selector === primary) {
+						return streamGoogleGeminiCli(model, context, {
+							...options,
+							apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
+							fetch: async () => {
+								fetchCalls += 1;
+								if (fetchCalls > 6) {
+									throw new Error(`Fetch loop bound exceeded (${fetchCalls} calls)`);
+								}
+								const body = `data: ${JSON.stringify({ response: { candidates: [], usageMetadata } })}\n\n`;
+								const response = new Response(body, {
+									status: 200,
+									headers: { "content-type": "text/event-stream" },
+								});
+								Object.defineProperty(response, "url", {
+									value: `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
+								});
+								return response;
+							},
+						});
+					}
+					mock.push({ content: [`ok:${selector}`] });
+					return mock.stream(requested, context, options);
+				},
+			});
+
+			const active = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings: Settings.isolated({
+					"compaction.enabled": false,
+					"retry.baseDelayMs": 5,
+					"retry.maxRetries": 40,
+					...(fallbackChains ? { "retry.fallbackChains": fallbackChains } : {}),
+				}),
+				modelRegistry,
+			});
+			session = active;
+			mockSchedulerWaitWithClock();
+
+			await active.prompt("Finish the current step");
+			await active.waitForIdle();
+			return { active, primary, requestedModels, requestContexts, fetchCalls };
+		}
+
+		it("terminates after provider empty-stream retries without restarting outer session retry", async () => {
+			const { active, primary, requestedModels, requestContexts, fetchCalls } = await runExhaustedEmptySession();
+
+			expect(fetchCalls).toBe(3);
+			expect(requestedModels).toEqual([primary]);
+			expect(requestContexts).toHaveLength(1);
+			expect(active.agent.state.messages.slice(0, 2).map(m => m.role)).toEqual(["user", "user"]);
+			expect(active.agent.state.messages[0]).toMatchObject({
+				role: "user",
+				content: "Prior task context that must remain intact",
+			});
+			const finalAssistant = getLastAssistantMessage(active);
+			expect(finalAssistant.stopReason).toBe("error");
+			expect(finalAssistant.errorMessage).toContain("empty response");
+			expect(finalAssistant.errorMessage).toContain(`"usageMetadata":${JSON.stringify(usageMetadata)}`);
+		});
+
+		it("switches once to configured fallback after provider empty-stream retries exhaust", async () => {
+			const { active, primary, requestedModels, requestContexts, fetchCalls } = await runExhaustedEmptySession({
+				"google-antigravity/*": [fallbackSelector],
+			});
+
+			expect(fetchCalls).toBe(3);
+			expect(requestedModels).toEqual([primary, fallbackSelector]);
+			expect(requestContexts).toHaveLength(2);
+			expect(requestContexts[1].map(m => m.role)).toEqual(["user", "user"]);
+			expect(requestContexts[1][0]).toMatchObject({
+				role: "user",
+				content: "Prior task context that must remain intact",
+			});
+			const finalAssistant = getLastAssistantMessage(active);
+			expect(finalAssistant.stopReason).toBe("stop");
+			expect(finalAssistant.content).toEqual([{ type: "text", text: `ok:${fallbackSelector}` }]);
 		});
 	});
 });
