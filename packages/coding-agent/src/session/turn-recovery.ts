@@ -32,6 +32,7 @@ import { formatModelStringWithRouting, resolveModelOverride } from "../config/mo
 import type { Settings } from "../config/settings";
 import type { RetryErrorUpdate } from "../extensibility/shared-events";
 import { isEvalStateContext } from "../eval/state";
+import antigravityEmptyResponseRetryTemplate from "../prompts/system/antigravity-empty-response-retry.md" with { type: "text" };
 import antigravityInvalidArgumentRetryTemplate from "../prompts/system/antigravity-invalid-argument-retry.md" with { type: "text" };
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
 import malformedFunctionCallRetryTemplate from "../prompts/system/malformed-function-call-retry.md" with { type: "text" };
@@ -109,7 +110,7 @@ const EMPTY_STOP_MAX_RETRIES = 3;
 const MALFORMED_FUNCTION_CALL_MAX_RETRIES = 3;
 const STREAM_STALL_CONTINUE_MAX_RETRIES = 3;
 const GENERIC_ABORT_MAX_RETRIES = 2;
-const ANTIGRAVITY_INVALID_ARGUMENT_MAX_RETRIES = 3;
+const ANTIGRAVITY_REJECTION_MAX_RETRIES = 3;
 const SIBLING_UNBLOCK_BUFFER_MS = 1_000;
 const NON_WHITESPACE_RE = /\S/;
 const USAGE_PREFLIGHT_BLOCKED_PREFIX = "Usage preflight blocked:";
@@ -139,6 +140,31 @@ const GENERIC_ABORT_MESSAGES: Record<string, true> = {
 
 function hasNonWhitespace(value: string): boolean {
 	return NON_WHITESPACE_RE.test(value);
+}
+
+/**
+ * Antigravity Gemini failures that hit a request before any output and depend on
+ * its exact body: resending the same body fails again, one more turn clears it.
+ */
+type AntigravityRejection = "invalid-argument" | "empty-response";
+
+const ANTIGRAVITY_REJECTION_TEMPLATES: Record<AntigravityRejection, string> = {
+	"invalid-argument": antigravityInvalidArgumentRetryTemplate,
+	"empty-response": antigravityEmptyResponseRetryTemplate,
+};
+
+function classifyAntigravityRejection(errorMessage: string): AntigravityRejection | undefined {
+	if (
+		errorMessage.includes("Cloud Code Assist API error (400)") &&
+		errorMessage.includes("INVALID_ARGUMENT") &&
+		errorMessage.includes("Request contains an invalid argument.")
+	) {
+		return "invalid-argument";
+	}
+	// The provider's own empty-stream retries are spent: every attempt ended without
+	// output (a thought-only stop has its own message and the empty-stop guard).
+	if (errorMessage.includes("Cloud Code Assist API returned an empty response")) return "empty-response";
+	return undefined;
 }
 
 /**
@@ -417,7 +443,7 @@ export class TurnRecovery {
 	#unexpectedStopRetryCount = 0;
 	#malformedFunctionCallRetryCount = 0;
 	#streamStallContinueCount = 0;
-	#antigravityInvalidArgumentRetryCount = 0;
+	#antigravityRejectionRetryCount = 0;
 	#acceptTerminalEmptyStopForPrompt = false;
 	// Three fields sit near the word "serve" and are deliberately distinct:
 	// `#activeRetryFallback.served` gates the one-shot `retry_fallback_succeeded`
@@ -556,7 +582,7 @@ export class TurnRecovery {
 		this.#unexpectedStopRetryCount = 0;
 		this.#malformedFunctionCallRetryCount = 0;
 		this.#streamStallContinueCount = 0;
-		this.#antigravityInvalidArgumentRetryCount = 0;
+		this.#antigravityRejectionRetryCount = 0;
 		this.#acceptTerminalEmptyStopForPrompt = false;
 		this.#activeFallbackCreditRedemption = undefined;
 	}
@@ -595,8 +621,8 @@ export class TurnRecovery {
 		// shake-and-retry. Back-to-back timeouts never reach this point, so the
 		// one-shot bound on an unchanged-request loop is unaffected.
 		this.#requestBodyReadTimeoutRecoveryPromptSequence = undefined;
-		// Likewise the Antigravity INVALID_ARGUMENT cap bounds consecutive rejections only.
-		this.#antigravityInvalidArgumentRetryCount = 0;
+		// Likewise the Antigravity same-model continuation cap bounds consecutive rejections only.
+		this.#antigravityRejectionRetryCount = 0;
 		const model = this.#host.model();
 		if (model) {
 			const level = this.#host.thinkingLevel();
@@ -720,59 +746,60 @@ export class TurnRecovery {
 	}
 
 	/**
-	 * Continue on the same model after Antigravity's Gemini route rejects a request
-	 * with a bare `400 INVALID_ARGUMENT` ("Request contains an invalid argument.")
-	 * before any output. The rejection depends on the exact request body: resending
-	 * it fails again, while a body with one more turn succeeds on the same model.
-	 * Without this, retry and the fallback chain switched models (or stopped the
-	 * session) on a transient rejection. Record the empty turn, drop it from active
-	 * context, append a developer reminder and continue after a backoff. Honors
-	 * `retry.enabled`; bounded by consecutive rejections, past the cap the generic
-	 * retry and hard-error fallback run as before.
+	 * Continue on the same model after Antigravity's Gemini route fails a request
+	 * before any output, in either of two ways: a bare `400 INVALID_ARGUMENT`
+	 * ("Request contains an invalid argument."), or `200` streams that end after one
+	 * frame carrying only a thought signature until the provider's own empty-stream
+	 * retries are spent ("Cloud Code Assist API returned an empty response"). Both
+	 * depend on the exact request body: resending it fails again, while a body with
+	 * one more turn succeeds on the same model. Without this, retry and the fallback
+	 * chain switched models, or the session stopped and a subagent task failed, on a
+	 * transient failure. Record the empty turn, drop it from active context, append a
+	 * developer reminder and continue after a backoff. Honors `retry.enabled`; bounded
+	 * by consecutive failures of either kind, past the cap the generic retry and
+	 * hard-error fallback run as before. Returns the rejection it continued past.
 	 */
-	async handleAntigravityInvalidArgumentStop(message: AssistantMessage): Promise<boolean> {
+	async handleAntigravityRejectedTurn(message: AssistantMessage): Promise<AntigravityRejection | undefined> {
 		const model = this.#host.model();
-		const errorMessage = message.errorMessage ?? "";
-		const rejected =
-			model?.provider === "google-antigravity" &&
-			model.identity.class === "gemini" &&
-			isEmptyErrorTurn(message) &&
-			errorMessage.includes("Cloud Code Assist API error (400)") &&
-			errorMessage.includes("INVALID_ARGUMENT") &&
-			errorMessage.includes("Request contains an invalid argument.");
-		if (!rejected) {
-			this.#antigravityInvalidArgumentRetryCount = 0;
-			return false;
+		const rejection =
+			model?.provider === "google-antigravity" && model.identity.class === "gemini" && isEmptyErrorTurn(message)
+				? classifyAntigravityRejection(message.errorMessage ?? "")
+				: undefined;
+		if (!rejection) {
+			this.#antigravityRejectionRetryCount = 0;
+			return undefined;
 		}
-		if (!this.autoRetryEnabled || this.#host.abortInProgress() || this.#host.isDisposed()) return false;
+		if (!this.autoRetryEnabled || this.#host.abortInProgress() || this.#host.isDisposed()) return undefined;
 
-		this.#antigravityInvalidArgumentRetryCount++;
-		const attempt = this.#antigravityInvalidArgumentRetryCount;
-		if (attempt > ANTIGRAVITY_INVALID_ARGUMENT_MAX_RETRIES) {
-			logger.warn("Antigravity kept rejecting the request with INVALID_ARGUMENT past retry cap", {
+		this.#antigravityRejectionRetryCount++;
+		const attempt = this.#antigravityRejectionRetryCount;
+		if (attempt > ANTIGRAVITY_REJECTION_MAX_RETRIES) {
+			logger.warn("Antigravity kept failing the request before any output past the same-model retry cap", {
+				rejection,
 				attempts: attempt - 1,
 				model: message.model,
 				provider: message.provider,
 			});
-			this.#antigravityInvalidArgumentRetryCount = 0;
-			return false;
+			this.#antigravityRejectionRetryCount = 0;
+			return undefined;
 		}
 
-		logger.info("Antigravity rejected the request with INVALID_ARGUMENT; continuing on the same model", {
+		logger.info("Antigravity failed the request before any output; continuing on the same model", {
+			rejection,
 			attempt,
 			model: message.model,
 			provider: message.provider,
 		});
 		await this.#persistTerminalEmptyErrorTurn(message);
-		this.removeAssistantMessageFromActiveContext(message, "antigravity-invalid-argument-continue");
+		this.removeAssistantMessageFromActiveContext(message, `antigravity-${rejection}-continue`);
 		this.#host.agent.appendMessage({
 			role: "developer",
 			content: [
 				{
 					type: "text",
-					text: prompt.render(antigravityInvalidArgumentRetryTemplate, {
+					text: prompt.render(ANTIGRAVITY_REJECTION_TEMPLATES[rejection], {
 						retryCount: attempt,
-						maxRetries: ANTIGRAVITY_INVALID_ARGUMENT_MAX_RETRIES,
+						maxRetries: ANTIGRAVITY_REJECTION_MAX_RETRIES,
 					}),
 				},
 			],
@@ -780,11 +807,11 @@ export class TurnRecovery {
 			timestamp: Date.now(),
 		});
 		this.#host.scheduleAgentContinue({
-			source: "antigravity-invalid-argument-retry",
+			source: `antigravity-${rejection}-retry`,
 			delayMs: calculateRetryBackoffDelayMs(cfgRetry.get(this.#host.settings).baseDelayMs, attempt),
 			generation: this.#host.promptGeneration(),
 		});
-		return true;
+		return rejection;
 	}
 
 	/**
