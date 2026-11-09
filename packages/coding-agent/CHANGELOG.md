@@ -20,6 +20,7 @@
 - Persistent empty Cloud Code Assist turns no longer multiply the provider's exhausted retry budget by the session retry limit; configured fallback routing and the original task context are preserved.
 - Python eval cells compile as `<cell-N>` and register their source, so `inspect.getsource` works on functions defined in earlier cells and tracebacks show the source lines
 - An Antigravity Gemini `400 INVALID_ARGUMENT` ("Request contains an invalid argument.") on a turn with no output now continues on the same model with a reminder, up to 3 consecutive times, instead of switching to the fallback chain or stopping the session
+- An Antigravity Gemini turn that ends with `Cloud Code Assist API returned an empty response` (every provider attempt returned a stream with no output) now continues on the same model with a reminder instead of ending the session, on a first run and on an IRC wake turn alike, so subagent tasks no longer fail with `failed (exit 1)` on it; it shares the 3-consecutive cap with `400 INVALID_ARGUMENT`, after which the configured fallback chain applies
 
 ## [18.16.0] - 2026-11-02
 
