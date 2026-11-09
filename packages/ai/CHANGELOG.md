@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Assistant turns carry `responseModel`, the model id the provider response itself reported (Anthropic `message.model`, Gemini/Antigravity `modelVersion`, OpenAI Responses and Codex `response.model`, Chat Completions chunk `model`); it is never copied from the request and is cleared when a retry discards the attempt that reported it.
+
+### Fixed
+
+- Cloud Code Assist empty responses now retain finish, block and token-usage diagnostics, persist bounded raw SSE response dumps (`raw-empty-response=`) after local empty-stream retries and endpoint failover are exhausted, and consult configured model fallbacks or surface the error instead of restarting the same retry budget.
+- Empty-response diagnostics reuse parsed SSE frames instead of decoding the wire payload twice.
+- Fixed tool calls served through the Anthropic auth gateway losing their inputs when arguments arrive only at the end of the call.
+- Fixed Gemini tool schemas on the Google, Cloud Code Assist/Antigravity and Factory Droid routes keeping empty-string `enum` members, which Gemini rejects with `enum[i]: cannot be empty`; the members are dropped, and an `enum` left empty is omitted.
+- `AuthBrokerClient.healthz()` now sends the configured bearer token, so health checks pass through brokers fronted by a server that authenticates every path
+
 ## [18.18.4] - 2026-11-09
 
 ### Added
@@ -73,16 +85,6 @@
 - Fixed reranking when Cohere-compatible responses omit the model field
 - Reranking requests now send configured model headers, including custom `Authorization`
 - Provider retries no longer retry responses explicitly marked non-retryable
-### Added
-
-- Assistant turns carry `responseModel`, the model id the provider response itself reported (Anthropic `message.model`, Gemini/Antigravity `modelVersion`, OpenAI Responses and Codex `response.model`, Chat Completions chunk `model`); it is never copied from the request and is cleared when a retry discards the attempt that reported it.
-
-### Fixed
-
-- Cloud Code Assist empty responses now retain finish, block and token-usage diagnostics, persist bounded raw SSE response dumps (`raw-empty-response=`) after local empty-stream retries and endpoint failover are exhausted, and consult configured model fallbacks or surface the error instead of restarting the same retry budget.
-- Empty-response diagnostics reuse parsed SSE frames instead of decoding the wire payload twice.
-- Fixed tool calls served through the Anthropic auth gateway losing their inputs when arguments arrive only at the end of the call.
-- Fixed Gemini tool schemas on the Google, Cloud Code Assist/Antigravity and Factory Droid routes keeping empty-string `enum` members, which Gemini rejects with `enum[i]: cannot be empty`; the members are dropped, and an `enum` left empty is omitted.
 
 ## [18.16.0] - 2026-11-02
 
@@ -135,7 +137,6 @@
 - Fixed the `omp auth-gateway` Responses endpoint rejecting documented null values for temperature, `top_p`, output limits, reasoning, and reasoning summaries ([#17466](https://github.com/can1357/oh-my-pi/pull/17466) by [@Xytronix](https://github.com/Xytronix)).
 - Fixed provider HTTP errors printing the response body twice when the thrown error already carried it, including responses with a retry header ([#17503](https://github.com/can1357/oh-my-pi/pull/17503) by [@metaphoric-dev](https://github.com/metaphoric-dev))
 - Fixed Gemini tool calls through the `omp auth-gateway` chat-completions endpoint failing on the next turn: the gateway now returns each call's thought signature in `extra_content` and replays the one a client sends back ([#17509](https://github.com/can1357/oh-my-pi/pull/17509) by [@justdoGIT](https://github.com/justdoGIT))
-- `AuthBrokerClient.healthz()` now sends the configured bearer token, so health checks pass through brokers fronted by a server that authenticates every path
 
 ## [18.14.1] - 2026-10-31
 

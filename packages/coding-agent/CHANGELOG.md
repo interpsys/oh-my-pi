@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Added
+
+- Orb standalone builds export `BUILD_INFO` with the base version, fork variant and compiled source commit; `omp --version` shows the fork marker and short commit.
+- The native judgment answer cache (`~/.omp/cache/judgment-cache.db`) is capped by `OMP_JUDGMENT_CACHE_MAX_BYTES` (default 2 GiB): above it the oldest judged states are pruned with their answers and the freed space is returned to the filesystem. An existing cache is rebuilt once with incremental auto-vacuum the first time it is pruned
+- Headless runs (`-p`, `--mode text|json`, non-terminal stdin) now share a machine-wide cap: each waits for one of `headless.maxConcurrent` (default 12) slot locks under `~/.omp/run/headless-gate` before its session starts; `OMP_HEADLESS_SLOTS` can only lower the cap, and a run whose `--max-time` passes while waiting exits 75
+
+### Changed
+
+- Eval `tool.mcp__<server>_<tool>(...)` returns the MCP payload itself (`structuredContent`, else the JSON-decoded text, else the text), and an MCP error result raises instead of returning a flagged object; MCP image blocks still display
+- Python eval `b = await judge_batch(...)` waits until every item settled and returns the batch; a plain call still returns at once
+- A subagent's soft request-budget notice is now a `<system-notice source="harness" kind="request-budget">` block that says it is an automatic harness message, not from the user or the parent, and asks the child to save its work, record running children, jobs and sandboxes, and hand off without cancelling them. The forced wrap-up reminder at 1.5× the budget likewise names itself an automatic harness stop and asks the child to name running work with its harvest/stop commands so the parent can adopt it
+- The "User interjection" steering envelope now wraps only steers the user typed. Agent- and harness-sent steers (`attribution: "agent"`), such as the request-budget notice and a parent's mid-turn IRC message, are no longer presented to the model as user intent; a parent's mid-turn message now opens with its own notice saying it comes from the parent agent, not the user
+
+### Fixed
+
+- Persistent empty Cloud Code Assist turns no longer multiply the provider's exhausted retry budget by the session retry limit; configured fallback routing and the original task context are preserved.
+- Python eval cells compile as `<cell-N>` and register their source, so `inspect.getsource` works on functions defined in earlier cells and tracebacks show the source lines
+- An Antigravity Gemini `400 INVALID_ARGUMENT` ("Request contains an invalid argument.") on a turn with no output now continues on the same model with a reminder, up to 3 consecutive times, instead of switching to the fallback chain or stopping the session
+- An Antigravity Gemini turn that ends with `Cloud Code Assist API returned an empty response` (every provider attempt returned a stream with no output) now continues on the same model with a reminder instead of ending the session, on a first run and on an IRC wake turn alike, so subagent tasks no longer fail with `failed (exit 1)` on it; it shares the 3-consecutive cap with `400 INVALID_ARGUMENT`, after which the configured fallback chain applies
+- Eval `tool.*` calls skip the shared artifact spill: code receives the full `text`, MCP `details.rawContent` and `details.structuredContent`, and no unused artifact is written (tools that bound their own output, such as `bash`, keep doing so).
+- Spilled direct MCP tool results drop `details.structuredContent` with the duplicate `rawContent` text, so a large structured payload lives only in its artifact instead of in live history.
+- `judge_batch` `status()` always carries `model` (`null` before any answer, `"mixed"` when more than one backend answered, instead of the backend of the last settled item) and `models` (answers per backend); `results()` returns `{key: {answers, model}}`.
+- `omp auth-broker status` no longer reports 401 against brokers that require a bearer on `/v1/healthz`, and failures now report `reason` (`auth_rejected`, `unreachable`, `http_error`) with the HTTP status and broker error code
+
 ## [18.18.4] - 2026-11-09
 
 ### Added
@@ -341,25 +365,6 @@
 - Out-of-credit provider errors now fail immediately instead of retrying for long periods; Retry works promptly once the account is funded.
 - DeepSeek-style `*** End` and `*** End Patch` markers are no longer written into files or truncate later edits
 - Composer prediction ghost text no longer vanishes when advisor messages arrive
-### Added
-
-- Orb standalone builds export `BUILD_INFO` with the base version, fork variant and compiled source commit; `omp --version` shows the fork marker and short commit.
-- The native judgment answer cache (`~/.omp/cache/judgment-cache.db`) is capped by `OMP_JUDGMENT_CACHE_MAX_BYTES` (default 2 GiB): above it the oldest judged states are pruned with their answers and the freed space is returned to the filesystem. An existing cache is rebuilt once with incremental auto-vacuum the first time it is pruned
-- Headless runs (`-p`, `--mode text|json`, non-terminal stdin) now share a machine-wide cap: each waits for one of `headless.maxConcurrent` (default 12) slot locks under `~/.omp/run/headless-gate` before its session starts; `OMP_HEADLESS_SLOTS` can only lower the cap, and a run whose `--max-time` passes while waiting exits 75
-
-### Changed
-
-- Eval `tool.mcp__<server>_<tool>(...)` returns the MCP payload itself (`structuredContent`, else the JSON-decoded text, else the text), and an MCP error result raises instead of returning a flagged object; MCP image blocks still display
-- Python eval `b = await judge_batch(...)` waits until every item settled and returns the batch; a plain call still returns at once
-- A subagent's soft request-budget notice is now a `<system-notice source="harness" kind="request-budget">` block that says it is an automatic harness message, not from the user or the parent, and asks the child to save its work, record running children, jobs and sandboxes, and hand off without cancelling them. The forced wrap-up reminder at 1.5× the budget likewise names itself an automatic harness stop and asks the child to name running work with its harvest/stop commands so the parent can adopt it
-- The "User interjection" steering envelope now wraps only steers the user typed. Agent- and harness-sent steers (`attribution: "agent"`), such as the request-budget notice and a parent's mid-turn IRC message, are no longer presented to the model as user intent; a parent's mid-turn message now opens with its own notice saying it comes from the parent agent, not the user
-
-### Fixed
-
-- Persistent empty Cloud Code Assist turns no longer multiply the provider's exhausted retry budget by the session retry limit; configured fallback routing and the original task context are preserved.
-- Python eval cells compile as `<cell-N>` and register their source, so `inspect.getsource` works on functions defined in earlier cells and tracebacks show the source lines
-- An Antigravity Gemini `400 INVALID_ARGUMENT` ("Request contains an invalid argument.") on a turn with no output now continues on the same model with a reminder, up to 3 consecutive times, instead of switching to the fallback chain or stopping the session
-- An Antigravity Gemini turn that ends with `Cloud Code Assist API returned an empty response` (every provider attempt returned a stream with no output) now continues on the same model with a reminder instead of ending the session, on a first run and on an IRC wake turn alike, so subagent tasks no longer fail with `failed (exit 1)` on it; it shares the 3-consecutive cap with `400 INVALID_ARGUMENT`, after which the configured fallback chain applies
 
 ## [18.16.0] - 2026-11-02
 
@@ -483,10 +488,6 @@
 - Fixed an advisor whose usage-limited account kept being reported as switchable retrying the same capped account thousands of times; it now tries each sibling account at most once per provider per failing review, then falls back, waits, or pauses on the quota ([#17472](https://github.com/can1357/oh-my-pi/issues/17472))
 - Fixed LSP definition, type definition, implementation and reference results carrying a stray carriage return on every source context line from files with Windows (CRLF) line endings ([#17549](https://github.com/can1357/oh-my-pi/pull/17549) by [@JustasMasiulis](https://github.com/JustasMasiulis))
 
-### Fixed
-
-- `omp auth-broker status` no longer reports 401 against brokers that require a bearer on `/v1/healthz`, and failures now report `reason` (`auth_rejected`, `unreachable`, `http_error`) with the HTTP status and broker error code
-
 ## [18.14.1] - 2026-10-31
 
 ### Added
@@ -512,9 +513,6 @@
 - Browser `fill` in Chrome replaces the text of rich-text editors such as Slate (Discord) and Lexical instead of leaving the old text in place or breaking the editor, and an empty fill clears them ([#17417](https://github.com/can1357/oh-my-pi/pull/17417) by [@will-bogusz](https://github.com/will-bogusz))
 - Requests to the Anthropic API and Factory Droid's hosts now drop their oldest images when long text, tool arguments, or re-declared tool definitions would otherwise push the request past the host's size limit ([#17492](https://github.com/can1357/oh-my-pi/pull/17492) by [@will-bogusz](https://github.com/will-bogusz))
 - Factory Droid requests size images against what each route actually sends: Gemini models count their expanded tool schemas and no longer drop images for another model's reasoning, and only Claude models count withdrawn tool definitions ([#17492](https://github.com/can1357/oh-my-pi/pull/17492))
-- Eval `tool.*` calls skip the shared artifact spill: code receives the full `text`, MCP `details.rawContent` and `details.structuredContent`, and no unused artifact is written (tools that bound their own output, such as `bash`, keep doing so).
-- Spilled direct MCP tool results drop `details.structuredContent` with the duplicate `rawContent` text, so a large structured payload lives only in its artifact instead of in live history.
-- `judge_batch` `status()` always carries `model` (`null` before any answer, `"mixed"` when more than one backend answered, instead of the backend of the last settled item) and `models` (answers per backend); `results()` returns `{key: {answers, model}}`.
 
 ## [18.14.0] - 2026-10-29
 

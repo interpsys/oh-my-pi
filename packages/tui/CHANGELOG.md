@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Native Rex sessions, including `TERM=xterm-rex` over SSH or tmux, now render Kitty graphics without `PI_FORCE_IMAGE_PROTOCOL` ([#17651](https://github.com/can1357/oh-my-pi/issues/17651)).
+- Rex charts now use Unicode placeholders by default so they remain readable in native scrollback ([#17650](https://github.com/can1357/oh-my-pi/issues/17650)).
+- Fixed completed table and reply rows disappearing on short terminals by collapsing todo, subagent and progress HUDs before they cover the transcript ([#17653](https://github.com/can1357/oh-my-pi/issues/17653)).
+
 ## [18.18.4] - 2026-11-09
 
 ### Added
@@ -143,11 +149,6 @@
 - The LSP diagnostics card lists diagnostics per file, counts every file, and reports server failures instead of `No issues` ([#18106](https://github.com/can1357/oh-my-pi/pull/18106) by [@JustasMasiulis](https://github.com/JustasMasiulis))
 - Closing an overlay that others opened over no longer makes them return focus to it ([#16476](https://github.com/can1357/oh-my-pi/pull/16476))
 - ASCII tree branches are two columns wide (`|-`, `'-`), so child rows align like Unicode trees ([#18103](https://github.com/can1357/oh-my-pi/pull/18103) by [@JustasMasiulis](https://github.com/JustasMasiulis))
-### Fixed
-
-- Native Rex sessions, including `TERM=xterm-rex` over SSH or tmux, now render Kitty graphics without `PI_FORCE_IMAGE_PROTOCOL` ([#17651](https://github.com/can1357/oh-my-pi/issues/17651)).
-- Rex charts now use Unicode placeholders by default so they remain readable in native scrollback ([#17650](https://github.com/can1357/oh-my-pi/issues/17650)).
-- Fixed completed table and reply rows disappearing on short terminals by collapsing todo, subagent and progress HUDs before they cover the transcript ([#17653](https://github.com/can1357/oh-my-pi/issues/17653)).
 
 ## [18.16.0] - 2026-11-02
 
