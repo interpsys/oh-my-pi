@@ -5,6 +5,7 @@
 ### Changed
 
 - Google Antigravity is enabled again: the fork drops its `disabled` auth rule and watches for account bans instead
+- GPT-6.1 Terra tops out at `xhigh` effort on every provider (OpenAI, Codex, Codex worker lanes, aggregators, Factory Droid); `max` is no longer offered for it
 
 ## [18.18.5] - 2026-11-09
 

@@ -44,6 +44,13 @@ class "openai" {
 		thinking-efforts "low" "medium" "high" "xhigh" "max"
 		requires-reasoning-off-juice-instruction #true
 	}
+	// residue: orb fork policy (2026-11-09): GPT-6.1 Terra tops out at xhigh on
+	// every host, so `max` is never a selectable effort for it. A glob, not a
+	// rank, because the cap covers one model and its Codex worker lane
+	// (`-wm`) and vendor-prefixed aggregator ids, not the whole 6.1 revision.
+	models "*gpt-6.1-terra*" {
+		thinking-efforts "low" "medium" "high" "xhigh"
+	}
 	// Delegation appetite is a lineage trait. GPT-5.6 was trained on Codex's
 	// "no subagents unless asked" developer message; GPT-6 fans out on its own
 	// and over-delegates under Claude-calibrated prompts (reflexive scouts,
