@@ -116,11 +116,12 @@ it("embeds fork provenance independently of the runtime checkout and environment
 		stderr: "pipe",
 	});
 	expect(result.exitCode).toBe(0);
+	const { version } = await Bun.file(path.join(repoRoot, "packages/coding-agent/package.json")).json();
 	expect(JSON.parse(result.stdout.toString())).toEqual({
-		version: "18.16.0",
+		version,
 		commit,
 		variant: "orb.1",
-		display: `18.16.0 (orb.1 ${commit.slice(0, 7)})`,
+		display: `${version} (orb.1 ${commit.slice(0, 7)})`,
 	});
 }, 30_000);
 describe("macOS release binary entitlements", () => {
