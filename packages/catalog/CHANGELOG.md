@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Google Antigravity is enabled again: the fork drops its `disabled` auth rule and watches for account bans instead
+
 ## [18.18.5] - 2026-11-09
 
 ### Added
