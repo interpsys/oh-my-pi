@@ -73,6 +73,10 @@
 - Fixed reranking when Cohere-compatible responses omit the model field
 - Reranking requests now send configured model headers, including custom `Authorization`
 - Provider retries no longer retry responses explicitly marked non-retryable
+### Added
+
+- Assistant turns carry `responseModel`, the model id the provider response itself reported (Anthropic `message.model`, Gemini/Antigravity `modelVersion`, OpenAI Responses and Codex `response.model`, Chat Completions chunk `model`); it is never copied from the request and is cleared when a retry discards the attempt that reported it.
+
 ### Fixed
 
 - Cloud Code Assist empty responses now retain finish, block and token-usage diagnostics, persist bounded raw SSE response dumps (`raw-empty-response=`) after local empty-stream retries and endpoint failover are exhausted, and consult configured model fallbacks or surface the error instead of restarting the same retry budget.

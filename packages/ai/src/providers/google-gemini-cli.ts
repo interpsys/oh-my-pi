@@ -708,8 +708,10 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				}
 
 				// Scoped per attempt so a failed/empty retry cannot leak its
-				// response id into the next request's last_execution_id.
+				// response id into the next request's last_execution_id, nor its
+				// reported model onto a turn another attempt produced.
 				lastResponseId = undefined;
+				output.responseModel = undefined;
 
 				let currentBlock: TextContent | ThinkingContent | null = null;
 				const blocks = output.content;
@@ -885,6 +887,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					const responseData = chunk.response;
 					if (!responseData) continue;
 					if (responseData.responseId) lastResponseId = responseData.responseId;
+					if (responseData.modelVersion) output.responseModel = responseData.modelVersion;
 					if (responseData.candidates) candidateCount = responseData.candidates.length;
 					if (responseData.promptFeedback) lastPromptFeedback = responseData.promptFeedback;
 					if (responseData.usageMetadata) lastUsageMetadata = responseData.usageMetadata;

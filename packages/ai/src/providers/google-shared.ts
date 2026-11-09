@@ -561,6 +561,7 @@ function resetGoogleStreamOutputForRetry(output: AssistantMessage): void {
 	};
 	output.stopReason = "stop";
 	output.errorMessage = undefined;
+	output.responseModel = undefined;
 	output.timestamp = Date.now();
 }
 
@@ -834,6 +835,7 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 
 	for await (const chunk of googleStream) {
 		if (chunk.error) throw googleStreamChunkError(chunk.error, model.provider);
+		if (chunk.modelVersion) output.responseModel = chunk.modelVersion;
 		if (!chunk.candidates?.length && chunk.promptFeedback?.blockReason) {
 			const detail = chunk.promptFeedback.blockReasonMessage;
 			throw new AIError.ProviderResponseError(
