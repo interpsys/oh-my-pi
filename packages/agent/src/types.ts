@@ -1023,7 +1023,9 @@ export interface AfterToolCallContext {
  * }
  * ```
  */
-export type CustomAgentMessages = {};
+export interface CustomAgentMessages {
+	// Empty by default - apps extend via declaration merging
+}
 
 /**
  * AgentMessage: Union of LLM messages + custom messages.
