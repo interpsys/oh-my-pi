@@ -659,11 +659,12 @@ function subprocessEnv(overrides: Record<string, string | undefined>): Record<st
 describe("Rex terminal capabilities", () => {
 	const nativeEnv = { TERM_PROGRAM: "rex", TERM: "xterm-256color", COLORTERM: "truecolor" };
 
-	it("does not promote unverified Rex capabilities along with Kitty graphics", () => {
+	it("enables Rex's verified OSC 8 links without promoting unverified capabilities", () => {
 		const id = detectTerminalId(nativeEnv);
 		const info = getTerminalInfo(id);
 		expect(info.trueColor).toBe(true);
-		expect(shouldEnableHyperlinksByDefault(nativeEnv, id)).toBe(false);
+		// Rex opens OSC 8 links on command-click, so links are a verified capability.
+		expect(shouldEnableHyperlinksByDefault(nativeEnv, id)).toBe(true);
 		expect(detectStyledUnderlineSupport(id, nativeEnv)).toBe(false);
 		expect(info.notifyProtocol).toBe(NotifyProtocol.Bell);
 		expect(info.deccara).toBe(false);
