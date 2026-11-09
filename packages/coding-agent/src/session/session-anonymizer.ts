@@ -257,6 +257,7 @@ const FIELD_RULES: Record<string, Rule> = {
 		"perCallModelIdentity",
 		"upstreamProvider",
 		"upstreamModel",
+		"responseModel",
 		"advisor",
 		"selector",
 		"resolvedModelIdentity",

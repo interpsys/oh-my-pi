@@ -1428,6 +1428,10 @@ const streamOpenAICompletionsOnce = (
 				// OpenAI documents ChatCompletionChunk.id as the unique chat completion identifier,
 				// and each chunk in a streamed completion carries the same id.
 				output.responseId ||= chunk.id;
+				// ChatCompletionChunk.model names the model that generated the chunk.
+				if (!output.responseModel && typeof chunk.model === "string" && chunk.model) {
+					output.responseModel = chunk.model;
+				}
 
 				// Aggregators (OpenRouter, Vercel AI Gateway, …) report the upstream
 				// provider that actually served the request via a top-level `provider`

@@ -1131,6 +1131,7 @@ const streamOpenAIResponsesOnce = (
 						if (resumedResponse !== undefined) {
 							const deadContent = [...output.content];
 							const deadResponseId = output.responseId;
+							const deadResponseModel = output.responseModel;
 							const deadUsage = structuredCloneJSON(output.usage);
 							const deadUpstreamModel = output.upstreamModel;
 							const deadUpstreamProvider = output.upstreamProvider;
@@ -1195,6 +1196,7 @@ const streamOpenAIResponsesOnce = (
 								output.content.length = 0;
 								output.content.push(...deadContent);
 								output.responseId = deadResponseId;
+								output.responseModel = deadResponseModel;
 								output.usage = deadUsage;
 								output.upstreamModel = deadUpstreamModel;
 								output.upstreamProvider = deadUpstreamProvider;
@@ -1229,6 +1231,7 @@ const streamOpenAIResponsesOnce = (
 					const retryOutput = createInitialResponsesAssistantMessage(model.api, model.provider, model.id);
 					output.content.length = 0;
 					output.responseId = undefined;
+					output.responseModel = undefined;
 					output.upstreamProvider = undefined;
 					output.errorMessage = undefined;
 					output.errorStatus = undefined;

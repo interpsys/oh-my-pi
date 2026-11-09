@@ -1333,6 +1333,13 @@ function resetOutputState(output: AssistantMessage): void {
 	};
 	output.stopReason = "stop";
 	output.stopDetails = undefined;
+	output.responseModel = undefined;
+}
+
+/** Records `response.model` from a lifecycle event; the request selector is never copied here. */
+function recordCodexResponseModel(output: AssistantMessage, rawEvent: Record<string, unknown>): void {
+	const reported = asRecord(rawEvent.response)?.model;
+	if (typeof reported === "string" && reported) output.responseModel = reported;
 }
 
 function createRequestSetup(options: OpenAICodexResponsesOptions | undefined): CodexRequestSetup {
@@ -2253,6 +2260,7 @@ class CodexStreamProcessor {
 		if (!eventType) return firstTokenTime;
 
 		if (eventType === "response.created") {
+			recordCodexResponseModel(output, rawEvent);
 			this.#startSteering(rawEvent);
 			return firstTokenTime;
 		}
@@ -2694,6 +2702,7 @@ class CodexStreamProcessor {
 		const endTurn = response && "end_turn" in response ? response.end_turn : undefined;
 
 		populateResponsesUsageFromResponse(output, usage);
+		recordCodexResponseModel(output, rawEvent);
 		recordCodexTurnUsageDiagnostics(runtime.websocketState, usage, output.usage);
 		if (responseId) {
 			output.responseId = responseId;

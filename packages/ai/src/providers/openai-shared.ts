@@ -3524,6 +3524,7 @@ export async function processResponsesStream<TApi extends Api>(
 		const terminalEvent = getOpenAIResponsesTerminalEvent(event);
 		if (event.type === "response.created") {
 			output.responseId = event.response.id;
+			if (event.response.model) output.responseModel = event.response.model;
 		} else if (event.type === "response.output_item.added") {
 			if (!sawFirstToken) {
 				sawFirstToken = true;
@@ -3872,6 +3873,7 @@ export async function processResponsesStream<TApi extends Api>(
 			if (response?.id) {
 				output.responseId = response.id;
 			}
+			if (response?.model) output.responseModel = response.model;
 			populateResponsesUsageFromResponse(output, response?.usage);
 			calculateCost(model, output.usage, output.timestamp);
 			applyProviderReportedCost(model, output.usage, response?.usage);
