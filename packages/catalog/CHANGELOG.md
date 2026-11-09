@@ -5,7 +5,7 @@
 ### Changed
 
 - Google Antigravity is enabled again: the fork drops its `disabled` auth rule and watches for account bans instead
-- GPT-6.1 Terra tops out at `xhigh` effort on every provider (OpenAI, Codex, Codex worker lanes, aggregators, Factory Droid); `max` is no longer offered for it
+- Every Terra model (GPT-5.6 and GPT-6.1 Terra, `-pro`, `:batch`, Codex `-wm`, `gpt-terra-latest`) tops out at `xhigh` effort on every provider, including discovered and cached rows whose host advertises `max` (OpenRouter); `max` is no longer offered for it. The new `thinking-max-effort` rule axis caps a resolved ladder from any layer
 
 ## [18.18.5] - 2026-11-09
 

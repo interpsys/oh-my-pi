@@ -1112,6 +1112,7 @@ function filterEffortMap(
 interface RuleThinking {
 	mode?: ThinkingConfig["mode"];
 	efforts?: readonly Effort[];
+	maxEffort?: Effort;
 	defaultLevel?: Effort;
 	effortMap?: Partial<Record<Effort, string>>;
 	effortBudgets?: Partial<Record<Effort, number>>;
@@ -1132,6 +1133,8 @@ function readRuleThinking(axes: ResolvedAxes): RuleThinking {
 	if (efforts !== undefined) out.efforts = efforts;
 	const defaultLevel = effortValue(raw.defaultLevel);
 	if (defaultLevel !== undefined) out.defaultLevel = defaultLevel;
+	const maxEffort = effortValue(raw.maxEffort);
+	if (maxEffort !== undefined) out.maxEffort = maxEffort;
 	const effortMap = effortRecord(raw.effortMap);
 	if (effortMap !== undefined) out.effortMap = effortMap;
 	const effortBudgets = effortNumberRecord(raw.effortBudgets);
@@ -1173,6 +1176,13 @@ function isQwenTemplateReasoningEffortCompat(compat: CompatOf<Api>): boolean {
 	);
 }
 
+/**
+ * The ladder from {@link resolveLadder} under the winning `thinking-max-effort`
+ * ceiling. Unlike `thinking-efforts`, the ceiling also binds explicit ladders
+ * (discovery advertisements, cached and bundled rows), which otherwise win.
+ * Per-effort entries above it (wire map, collapsed-variant routing, budgets)
+ * go too; a ladder with no tier at or under it leaves no effort control.
+ */
 function resolveThinkingPolicy<TApi extends Api>(
 	spec: ModelSpec<TApi>,
 	facts: IdentityFacts,
@@ -1180,6 +1190,40 @@ function resolveThinkingPolicy<TApi extends Api>(
 	compat: CompatOf<TApi>,
 ): ThinkingConfig | undefined {
 	const rule = readRuleThinking(axes);
+	const thinking = resolveLadder(spec, facts, axes, compat, rule);
+	if (thinking === undefined || rule.maxEffort === undefined) return thinking;
+	const ceiling = THINKING_EFFORTS.indexOf(rule.maxEffort);
+	const efforts = thinking.efforts.filter(effort => THINKING_EFFORTS.indexOf(effort) <= ceiling);
+	if (efforts.length === 0) return undefined;
+	const capped: ThinkingConfig = { ...thinking, efforts };
+	if (thinking.defaultLevel !== undefined && !efforts.includes(thinking.defaultLevel)) {
+		capped.defaultLevel = efforts[efforts.length - 1];
+	}
+	if (thinking.effortMap) capped.effortMap = entriesUpTo(thinking.effortMap, ceiling);
+	if (thinking.effortRouting) capped.effortRouting = entriesUpTo(thinking.effortRouting, ceiling);
+	if (thinking.effortBudgets) capped.effortBudgets = entriesUpTo(thinking.effortBudgets, ceiling);
+	return capped;
+}
+
+/** `entries` without the efforts ranked above `ceiling` (an index into `THINKING_EFFORTS`); other keys stay. */
+function entriesUpTo<K extends string, V>(
+	entries: Readonly<Partial<Record<K, V>>>,
+	ceiling: number,
+): Partial<Record<K, V>> {
+	const kept: Partial<Record<K, V>> = {};
+	for (const key of Object.keys(entries) as K[]) {
+		if (THINKING_EFFORTS.indexOf(key as string as Effort) <= ceiling) kept[key] = entries[key];
+	}
+	return kept;
+}
+
+function resolveLadder<TApi extends Api>(
+	spec: ModelSpec<TApi>,
+	facts: IdentityFacts,
+	axes: ResolvedAxes,
+	compat: CompatOf<TApi>,
+	rule: RuleThinking,
+): ThinkingConfig | undefined {
 	const explicitThinking =
 		spec.thinking !== undefined && Array.isArray(spec.thinking.efforts) && spec.thinking.efforts.length > 0
 			? spec.thinking
