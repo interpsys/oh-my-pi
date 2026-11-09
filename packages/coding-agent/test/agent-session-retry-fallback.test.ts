@@ -9484,7 +9484,7 @@ describe("AgentSession retry fallback", () => {
 			fallbackChains?: Record<string, string[]>,
 			wakeBody?: string,
 		) {
-			const baseModel = getBundledModel("google-antigravity", "gemini-4-argon");
+			const baseModel = getBundledModel<"google-gemini-cli">("google-antigravity", "gemini-4-argon");
 			if (!baseModel) throw new Error("Expected bundled google-antigravity/gemini-4-argon to exist");
 			const endpoint = "https://custom-cca.example.com";
 			const model: Model<"google-gemini-cli"> = { ...baseModel, baseUrl: endpoint };
