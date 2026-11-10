@@ -6,18 +6,11 @@
 
 - Google Antigravity is enabled again: the fork drops its `disabled` auth rule and watches for account bans instead
 - Every Terra model (GPT-5.6 and GPT-6.1 Terra, `-pro`, `:batch`, Codex `-wm`, `gpt-terra-latest`) tops out at `xhigh` effort on every provider, including discovered and cached rows whose host advertises `max` (OpenRouter); `max` is no longer offered for it. The new `thinking-max-effort` rule axis caps a resolved ladder from any layer
-- Google Antigravity now lists Gemini 4 Carbon once, with selectable low, medium, and high thinking levels, instead of a separate entry per thinking tier; on the Gemini API, Gemini 4 Carbon now offers the same thinking levels instead of none
-- Morph (`api.morphllm.com`) requests now send `x-session-id`, keeping a conversation on the worker that holds its prompt cache ([#18704](https://github.com/can1357/oh-my-pi/pull/18704) by [@wolfiesch](https://github.com/wolfiesch))
 - Google Antigravity now lists Gemini 4 Carbon once, with selectable low, medium, and high thinking levels, instead of a separate entry per thinking tier; on the Gemini API, Gemini 4 Carbon now offers the same thinking levels instead of none ([#18734](https://github.com/can1357/oh-my-pi/pull/18734) by [@eggpeat](https://github.com/eggpeat))
+
 ### Added
 
-- Added Muse Ember (`muse-ember-1.0`) on Meta Model API and Muse Code with the `minimal`–`max` reasoning effort ladder and its >200K long-context pricing
-
-## [18.18.6] - 2026-11-09
-
-### Fixed
-
-- LiteLLM lists only the models the configured key can call (its authenticated `/v1/models`), keeping the proxy's metadata for them; a proxy whose `/v1/models` fails now lists no models instead of every model it serves ([#18601](https://github.com/can1357/oh-my-pi/issues/18601))
+- Added Gemini 4 Carbon pricing on the Gemini API, Vertex AI, and Google Antigravity ($2 input / $0.10 cached / $10 output per 1M tokens through 2026-11-30, then $4 / $0.20 / $20), instead of showing $0 ([#18734](https://github.com/can1357/oh-my-pi/pull/18734) by [@eggpeat](https://github.com/eggpeat))
 
 ## [18.18.5] - 2026-11-09
 
