@@ -11,6 +11,7 @@
 ### Added
 
 - Added Gemini 4 Carbon pricing on the Gemini API, Vertex AI, and Google Antigravity ($2 input / $0.10 cached / $10 output per 1M tokens through 2026-11-30, then $4 / $0.20 / $20), instead of showing $0 ([#18734](https://github.com/can1357/oh-my-pi/pull/18734) by [@eggpeat](https://github.com/eggpeat))
+- Bundled Google Antigravity Gemini 4 Carbon, so `google-antigravity/gemini-4-carbon` resolves on hosts that never run Antigravity discovery (auth-broker and gateway clients) the same way Gemini 4 Argon does
 
 ## [18.18.5] - 2026-11-09
 
