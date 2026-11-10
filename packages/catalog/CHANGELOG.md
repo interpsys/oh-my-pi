@@ -6,6 +6,7 @@
 
 - Google Antigravity is enabled again: the fork drops its `disabled` auth rule and watches for account bans instead
 - Every Terra model (GPT-5.6 and GPT-6.1 Terra, `-pro`, `:batch`, Codex `-wm`, `gpt-terra-latest`) tops out at `xhigh` effort on every provider, including discovered and cached rows whose host advertises `max` (OpenRouter); `max` is no longer offered for it. The new `thinking-max-effort` rule axis caps a resolved ladder from any layer
+- Google Antigravity now lists Gemini 4 Carbon once, with selectable low, medium, and high thinking levels, instead of a separate entry per thinking tier; on the Gemini API, Gemini 4 Carbon now offers the same thinking levels instead of none
 
 ## [18.18.5] - 2026-11-09
 
