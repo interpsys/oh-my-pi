@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Effort } from "../src/effort";
 import { getSupportedEfforts } from "../src/model-thinking";
 import { getBundledModel } from "../src/models";
 
@@ -9,7 +10,7 @@ describe("bundled Google Antigravity Gemini 4 Carbon", () => {
 
 	test("is one collapsed row routing each thinking level to its SKU", () => {
 		expect(carbon).toBeDefined();
-		expect(getSupportedEfforts(carbon!)).toEqual(["low", "medium", "high"]);
+		expect(getSupportedEfforts(carbon!)).toEqual([Effort.Low, Effort.Medium, Effort.High]);
 		expect(Object.keys(carbon!.antigravityWireProfiles ?? {}).sort()).toEqual([
 			"gemini-4-carbon-high",
 			"gemini-4-carbon-low",
