@@ -6,7 +6,7 @@
  * - `omp --mode json "prompt"` - JSON event stream
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import { presentNarrationAsAnswer } from "@oh-my-pi/pi-ai/utils/narration";
 import { $flag, logger, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
 import { HINDSIGHT_NOTICE_SOURCE } from "../hindsight/state";
@@ -50,6 +50,12 @@ export interface PrintModeOptions {
 	mcpManager?: MCPManager;
 	/** `--max-time` deadline (epoch ms). It aborts running turns; the background-job wait enforces it itself. */
 	deadline?: number;
+	/**
+	 * `--max-requests`: model requests the run may send. The next one is refused once the
+	 * last reply's tool results are recorded; the run prints that reply and exits
+	 * {@link PRINT_MODE_MAX_REQUESTS_EXIT_CODE}.
+	 */
+	maxRequests?: number;
 }
 
 /** Matches the longest built-in provider request deadline while bounding tool-loop stalls. */
@@ -60,6 +66,8 @@ export const PRINT_MODE_ERROR_ADVISOR_DRAIN_TIMEOUT_MS = 30_000;
 const MAX_TIMER_MS = 2_147_483_647;
 /** Exit status of a run the cost gate stopped (`--max-cost` / `session.maxCost` reached). */
 export const PRINT_MODE_COST_CAP_EXIT_CODE = 3;
+/** Exit status of a run `--max-requests` stopped; like the cost cap, the run ended at a limit. */
+export const PRINT_MODE_MAX_REQUESTS_EXIT_CODE = 3;
 
 /** Sanitize untrusted text (server names, errors) into one stderr-safe line. */
 function singleLine(text: string): string {
@@ -355,8 +363,38 @@ async function runPrintModeCore(
 		writeStderrLine(`Warning: ${formatPersistenceNotice(notice)}`);
 	});
 
+	// `--max-requests`: count the model requests this run sends and refuse the one past the
+	// limit. The loop asks before every request, after the previous reply's tool results
+	// are recorded, so the run stops on a complete turn without sending another request.
+	const { maxRequests } = options;
+	let requestsSent = 0;
+	/** Set once the limit stopped the run: the refusal reported on stderr. */
+	let requestCapRefusal: string | undefined;
+	/** Whether the run wants a request past the limit; records the refusal if so. */
+	const requestBudgetSpent = (): boolean => {
+		if (maxRequests === undefined || requestsSent < maxRequests) return false;
+		requestCapRefusal ??= `Request limit reached: this run sent ${maxRequests} model request${maxRequests === 1 ? "" : "s"} (--max-requests), so the next one was not sent.`;
+		return true;
+	};
+	const removeRequestCap =
+		maxRequests === undefined
+			? undefined
+			: session.agent.addBeforeModelCall((_context, signal) => {
+					// An aborted run stops before the call anyway; that stop is not the limit's.
+					if (signal?.aborted) return undefined;
+					if (requestBudgetSpent()) return { stop: true, reason: requestCapRefusal };
+					requestsSent++;
+					return undefined;
+				});
+	// The last model reply before the limit stopped the run. A refusal inside an open turn
+	// appends an empty stop message, which must not replace that reply as the answer.
+	let lastReplyBeforeCap: AssistantMessage | undefined;
+
 	// Always subscribe to enable session persistence via _handleAgentEvent
 	session.subscribe(event => {
+		if (event.type === "message_end" && event.message.role === "assistant" && requestCapRefusal === undefined) {
+			lastReplyBeforeCap = event.message;
+		}
 		// In JSON mode, output all events
 		if (mode === "json") {
 			writeStdoutLine(`${JSON.stringify(printableEvent(event))}\n`);
@@ -470,7 +508,8 @@ async function runPrintModeCore(
 	// Remaining messages are CLI-authored: dispatch the recovery command as
 	// reached, prompt everything else.
 	for (const message of messages) {
-		if (strictMCPFailure) break;
+		// Past the request limit the run is over: later inputs would only record unanswered prompts.
+		if (strictMCPFailure || requestBudgetSpent()) break;
 		if (await dispatchCliMessage(message)) {
 			readinessDirty = true;
 			continue;
@@ -496,7 +535,12 @@ async function runPrintModeCore(
 	// races it; reaching it cancels the jobs and any pending retry (dispose below)
 	// and fails the run.
 	let asyncWaitExpired = false;
-	if (admittedAgentTurn && !strictMCPFailure && cfgAsyncPrintWake.get(session.settings)) {
+	if (
+		admittedAgentTurn &&
+		!strictMCPFailure &&
+		requestCapRefusal === undefined &&
+		cfgAsyncPrintWake.get(session.settings)
+	) {
 		const { deadline } = options;
 		const deadlineReached = Promise.withResolvers<true>();
 		// setTimeout overflows past 2^31-1 ms and fires in ~1 ms (#12375), and `--max-time 600h`
@@ -518,7 +562,13 @@ async function runPrintModeCore(
 		try {
 			// Without owned jobs a late primary turn is not this wait's business: it keeps its own exit path.
 			asyncWaitExpired = (await expires(session.waitForIdle())) && session.hasPendingAsyncWork();
-			while (!asyncWaitExpired && session.hasPendingAsyncWork() && !session.isDisposed && !signalTeardownActive()) {
+			while (
+				!asyncWaitExpired &&
+				requestCapRefusal === undefined &&
+				session.hasPendingAsyncWork() &&
+				!session.isDisposed &&
+				!signalTeardownActive()
+			) {
 				// Checked synchronously too: an already-due timer fires only in the timers
 				// phase, after a settle of finished work would have resolved. The deadline
 				// stops new waits; a settle that already finished is kept: its follow-up turn
@@ -548,8 +598,15 @@ async function runPrintModeCore(
 	// Read via the session accessor, not the raw state tail: a classifier
 	// refusal is pruned from active context at settle, and an aborted turn
 	// can trail synthetic tool results — both would hide the terminal
-	// assistant message (and its error) from a last-element read.
-	const assistantMsg = admittedAgentTurn ? session.getLastAssistantMessage() : undefined;
+	// assistant message (and its error) from a last-element read. A run the
+	// request limit stopped answers with its last reply before the refusal.
+	const assistantMsg =
+		requestCapRefusal !== undefined
+			? lastReplyBeforeCap
+			: admittedAgentTurn
+				? session.getLastAssistantMessage()
+				: undefined;
+	if (requestCapRefusal !== undefined) writeStderrLine(requestCapRefusal);
 	// A request refused during the last admitted turn ends the run short of an
 	// answer; the refusal (already on stderr, or a `cost-gate` notice in the JSON
 	// stream) is the outcome, with its own exit code.
@@ -562,6 +619,7 @@ async function runPrintModeCore(
 	const terminalFailure =
 		!strictMCPFailure &&
 		!costCapped &&
+		requestCapRefusal === undefined &&
 		assistantMsg !== undefined &&
 		(assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") &&
 		!isSilentAbort(assistantMsg) &&
@@ -607,6 +665,8 @@ async function runPrintModeCore(
 	}
 	// Error spans must reach the exporter; the postmortem `exit` handler can't await.
 	if (terminalFailure) await flushTelemetryExport();
+	// This run sends no more requests; a later run on the session gets its own limit.
+	removeRequestCap?.();
 
 	// Block shutdown until every serialized stdout write (including the final
 	// agent_end and late JSON advisor events) has drained; process.exit would
@@ -643,5 +703,6 @@ async function runPrintModeCore(
 
 	await stderrTail;
 	if (terminalFailure || durabilityFailure || strictMCPFailure || builtinFailed || asyncWaitExpired) return 1;
-	return costCapped ? PRINT_MODE_COST_CAP_EXIT_CODE : 0;
+	if (costCapped) return PRINT_MODE_COST_CAP_EXIT_CODE;
+	return requestCapRefusal === undefined ? 0 : PRINT_MODE_MAX_REQUESTS_EXIT_CODE;
 }

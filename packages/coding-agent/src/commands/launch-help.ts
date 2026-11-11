@@ -126,6 +126,10 @@ export const launchHelp = {
 			description:
 				"Stop sending model requests once the session's spend reaches this many USD; requests already in flight can finish past it (print mode exits 3)",
 		}),
+		"max-requests": Flags.string({
+			description:
+				"Print mode: stop after this many model requests, once the last one's tool results are recorded; prints the last answer and exits 3",
+		}),
 		"auto-approve": Flags.boolean({
 			aliases: ["yolo"],
 			description: "Auto-approve all tool calls (skip approval prompts)",

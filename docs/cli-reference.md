@@ -149,6 +149,7 @@ See [providers](./providers.md) and [models](./models.md) for model resolution.
 | `--max-time <duration>`    | Stop the session after this duration (e.g. `600`, `10m`, `1h`).                                                                                                                                      |
 | `--warn-cost <usd>`        | Warn once when the session's spend, subagents included, reaches this many USD. Overrides `session.warnCost`.                                                                                         |
 | `--max-cost <usd>`         | Stop sending model requests once the session's spend reaches this many USD; a request already in flight can carry spend past it. Overrides `session.maxCost`.                                        |
+| `--max-requests <n>`       | Print mode: send at most this many model requests; once the last one's tool results are recorded, print the last answer and exit `3`.                                                                |
 
 #### Extensions, hooks, skills, and rules
 
@@ -216,6 +217,7 @@ Related flags for headless runs:
 - `--max-time <duration>` — bound the run, including any wait for a headless slot (below).
 - `--wait-async` — keep the run alive for its background jobs (below).
 - `--warn-cost <usd>` / `--max-cost <usd>` — warn at, or stop sending model requests from, a spend.
+- `--max-requests <n>` — stop after `n` model requests, once the last one's tool results are recorded.
 
 Print mode is single-shot by default: once its prompts are answered it disposes
 the session, which cancels background jobs the run started (`bash` or `task`
@@ -236,7 +238,10 @@ Incremental `message_update` events omit full partial-message snapshots; complet
 messages arrive in `message_end`, and opaque provider replay payloads are omitted.
 Terminal turn failures produce a nonzero exit status in both text and JSON modes.
 A run stopped by `--max-cost` exits with status `3`: the cap message goes to
-stderr (a `cost-gate` notice in JSON mode) and no answer is printed.
+stderr (a `cost-gate` notice in JSON mode) and no answer is printed. A run
+stopped by `--max-requests` also exits with status `3`: it sends no request past
+the limit and stops once the last reply's tool results are recorded. Text mode
+prints that reply as the answer; in both modes the limit message goes to stderr.
 
 At most `headless.maxConcurrent` (default 12) headless runs execute at once on
 a machine, across every profile and caller: `-p`, `--mode text|json`, and any

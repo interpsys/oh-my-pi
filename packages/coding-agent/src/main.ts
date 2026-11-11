@@ -2894,6 +2894,7 @@ export async function runRootCommand(
 					planYolo: parsedArgs.planYolo,
 					mcpManager,
 					deadline: sessionOptions.deadline,
+					maxRequests: parsedArgs.maxRequests,
 				});
 				if ($env.PI_TIMING) {
 					logger.printTimings();
