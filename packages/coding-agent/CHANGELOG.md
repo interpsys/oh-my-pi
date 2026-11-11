@@ -7,6 +7,7 @@
 - Orb standalone builds export `BUILD_INFO` with the base version, fork variant and compiled source commit; `omp --version` shows the fork marker and short commit.
 - The native judgment answer cache (`~/.omp/cache/judgment-cache.db`) is capped by `OMP_JUDGMENT_CACHE_MAX_BYTES` (default 2 GiB): above it the oldest judged states are pruned with their answers and the freed space is returned to the filesystem. An existing cache is rebuilt once with incremental auto-vacuum the first time it is pruned
 - Headless runs (`-p`, `--mode text|json`, non-terminal stdin) now share a machine-wide cap: each waits for one of `headless.maxConcurrent` (default 12) slot locks under `~/.omp/run/headless-gate` before its session starts; `OMP_HEADLESS_SLOTS` can only lower the cap, and a run whose `--max-time` passes while waiting exits 75
+- Added `--max-requests <n>` to print mode (`omp -p`): once the agent has sent `n` model requests (retries included; side requests and subagents excluded), the run records that request's tool results, sends no further request, prints the last assistant text as usual and exits 3. Runs that finish within `n` requests, and runs without the flag, are unchanged
 
 ### Changed
 

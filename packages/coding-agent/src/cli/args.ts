@@ -46,6 +46,8 @@ export interface Args {
 	maxTime?: number;
 	warnCost?: number;
 	maxCost?: number;
+	/** Print mode: model requests the agent may send this run (`--max-requests`); the next one stops it with exit 3. */
+	maxRequests?: number;
 	apiKey?: string;
 	systemPrompt?: string;
 	systemPromptTemplate?: string;

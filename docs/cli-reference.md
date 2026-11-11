@@ -149,6 +149,7 @@ See [providers](./providers.md) and [models](./models.md) for model resolution.
 | `--max-time <duration>`    | Stop the session after this duration (e.g. `600`, `10m`, `1h`).                                                                                                                                      |
 | `--warn-cost <usd>`        | Warn once when the session's spend, subagents included, reaches this many USD. Overrides `session.warnCost`.                                                                                         |
 | `--max-cost <usd>`         | Stop sending model requests once the session's spend reaches this many USD; a request already in flight can carry spend past it. Overrides `session.maxCost`.                                        |
+| `--max-requests <n>`       | Print mode: stop once the agent has sent this many model requests, after the last one's tool results are recorded; prints the last answer and exits with status `3`.                                 |
 
 #### Extensions, hooks, skills, and rules
 
@@ -216,6 +217,7 @@ Related flags for headless runs:
 - `--max-time <duration>` — bound the run, including any wait for a headless slot (below).
 - `--wait-async` — keep the run alive for its background jobs (below).
 - `--warn-cost <usd>` / `--max-cost <usd>` — warn at, or stop sending model requests from, a spend.
+- `--max-requests <n>` — stop after this many model requests of the agent's own turns.
 
 Print mode is single-shot by default: once its prompts are answered it disposes
 the session, which cancels background jobs the run started (`bash` or `task`
@@ -237,6 +239,13 @@ messages arrive in `message_end`, and opaque provider replay payloads are omitte
 Terminal turn failures produce a nonzero exit status in both text and JSON modes.
 A run stopped by `--max-cost` exits with status `3`: the cap message goes to
 stderr (a `cost-gate` notice in JSON mode) and no answer is printed.
+
+`--max-requests <n>` counts the model requests of the agent's own turns,
+retries included; side requests (title, compaction, advisor) and subagents do
+not count. Once `n` requests are sent, the run records the tool results of the
+last one, sends no further request, prints the last assistant text as usual,
+and exits with status `3`; a `Request limit reached` line goes to stderr. A run
+that finishes within `n` requests exits as it would without the flag.
 
 At most `headless.maxConcurrent` (default 12) headless runs execute at once on
 a machine, across every profile and caller: `-p`, `--mode text|json`, and any

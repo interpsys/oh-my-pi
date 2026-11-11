@@ -117,6 +117,15 @@ function parseCostUsd(flag: string, value: string): number {
 	);
 }
 
+function parseRequestCount(value: string): number {
+	const trimmed = value.trim();
+	const count = Number(trimmed);
+	if (/^\d+$/.test(trimmed) && Number.isSafeInteger(count) && count > 0) return count;
+	throw new CliUsageError(
+		`Invalid --max-requests value: ${JSON.stringify(value)}. Expected a positive whole number of model requests, e.g. 20.`,
+	);
+}
+
 /**
  * Setters for flags with string values. Most built-ins consume the next argv
  * token even when it starts with `-`; flags listed in
@@ -178,6 +187,9 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	},
 	"--max-cost": (result, value) => {
 		result.maxCost = parseCostUsd("--max-cost", value);
+	},
+	"--max-requests": (result, value) => {
+		result.maxRequests = parseRequestCount(value);
 	},
 	"--service-tier": (result, value) => {
 		if (!isServiceTierOpenAISettingValue(value)) {
