@@ -14,6 +14,7 @@
 - Python eval `b = await judge_batch(...)` waits until every item settled and returns the batch; a plain call still returns at once
 - A subagent's soft request-budget notice is now a `<system-notice source="harness" kind="request-budget">` block that says it is an automatic harness message, not from the user or the parent, and asks the child to save its work, record running children, jobs and sandboxes, and hand off without cancelling them. The forced wrap-up reminder at 1.5× the budget likewise names itself an automatic harness stop and asks the child to name running work with its harvest/stop commands so the parent can adopt it
 - The "User interjection" steering envelope now wraps only steers the user typed. Agent- and harness-sent steers (`attribution: "agent"`), such as the request-budget notice and a parent's mid-turn IRC message, are no longer presented to the model as user intent; a parent's mid-turn message now opens with its own notice saying it comes from the parent agent, not the user
+- A `wait` with nothing new now returns after 5m, and a back-to-back one after 15m, instead of climbing from 5s (5s, 10s, 30s, 1m, 5m). Job completion, direct messages, replies and interrupts still end a wait at once; the short rungs only turned waits into paid empty model requests (about 2,100 a day on Opus)
 
 ### Fixed
 
