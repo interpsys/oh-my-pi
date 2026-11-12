@@ -1,0 +1,90 @@
+Pinned provider:2661f95e04cb84038e9183bd3ba02b176fbf88d8
+Portable baseline: git show PIN:packages/ai/src/providers/google-gemini-cli.ts -> temporary sibling baseline module; test file import replaced with that module only. Shared SSE reader had an unused optional byte observer; baseline provider never passed it.
+Matching native addon:@oh-my-pi/pi-natives-darwin-arm64@18.18.5 from npm registry.
+Command:bun test packages/ai/test/google-gemini-cli-byte-watchdog.baseline.test.ts
+Result:1 pass5 fail, exit1; temporary files removed.
+
+bun test v1.4.4 (38afee6c8)
+
+packages/ai/test/google-gemini-cli-byte-watchdog.baseline.test.ts:
+392 | 			const startedAt = performance.now();
+393 | 			const { message, settledAt } = await collect(
+394 | 				streamGoogleGeminiCli(antigravityModel, context, { ...watchdogOptions(server), providerSessionState }),
+395 | 			);
+396 | 
+397 | 			expect(message.errorMessage).toBeUndefined();
+                                      ^
+error: expect(received).toBeUndefined()
+
+Received: "Request was aborted"
+
+      at <anonymous> (/Users/compoooter/coding/.worktrees.noindex/oh-my-pi/antigravity-stream-watchdog/packages/ai/test/google-gemini-cli-byte-watchdog.baseline.test.ts:397:33)
+(fail) Antigravity fails over from a sandbox request that never sends headers to production on a fresh connection [112.95ms]
+361 | 	);
+362 | }
+363 | 
+364 | /** A retry after a stall must open a new socket: never the stalled one, never an idle pooled one. */
+365 | function expectFreshConnection(server: FakeCcaServer, stalled: Exchange, retry: Exchange, retryCall: FetchCall): void {
+366 | 	expect(retryCall.keepalive).toBe(false);
+                                   ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: undefined
+
+      at expectFreshConnection (/Users/compoooter/coding/.worktrees.noindex/oh-my-pi/antigravity-stream-watchdog/packages/ai/test/google-gemini-cli-byte-watchdog.baseline.test.ts:366:30)
+      at <anonymous> (/Users/compoooter/coding/.worktrees.noindex/oh-my-pi/antigravity-stream-watchdog/packages/ai/test/google-gemini-cli-byte-watchdog.baseline.test.ts:445:4)
+(fail) Antigravity aborts a response whose headers arrive but whose body never emits, then fails over [109.60ms]
+485 | 				}),
+486 | 			);
+487 | 
+488 | 			expect(message.errorMessage).toBeUndefined();
+489 | 			expect(message.stopReason).toBe("stop");
+490 | 			expect(contentSummary(message)).toEqual([
+                                         ^
+error: expect(received).toEqual(expected)
+
+@@ -2,8 +2,4 @@
+    [
+-     "thinking",
+-     "Considering the request.",
+-   ],
+-   [
+      "text",
+-     "Survived the slow stream.",
++     "Unexpected failover.",
+    ],
+
+- Expected  - 5
++ Received  + 1
+
+      at <anonymous> (/Users/compoooter/coding/.worktrees.noindex/oh-my-pi/antigravity-stream-watchdog/packages/ai/test/google-gemini-cli-byte-watchdog.baseline.test.ts:490:36)
+(fail) every raw body byte counts: comments and partial SSE frames keep a slow stream alive past both budgets [107.76ms]
+308 | 
+309 | async function collect(stream: AssistantMessageEventStream): Promise<Collected> {
+310 | 	const events: AssistantMessageEvent[] = [];
+311 | 	const safety = AbortSignal.timeout(TEST_SAFETY_MS);
+312 | 	const { promise: expired, reject } = Promise.withResolvers<never>();
+313 | 	const onExpire = (): void => reject(new Error(`stream did not settle within ${TEST_SAFETY_MS}ms (test safety)`));
+                                               ^
+error: stream did not settle within 5000ms (test safety)
+      at onExpire (/Users/compoooter/coding/.worktrees.noindex/oh-my-pi/antigravity-stream-watchdog/packages/ai/test/google-gemini-cli-byte-watchdog.baseline.test.ts:313:42)
+(fail) a stall after thinking has streamed surfaces a retryable timeout without replaying emitted deltas [5002.64ms]
+607 | 					// The test measures stall recovery, not the backoff schedule.
+608 | 					maxRetryDelayMs: 100,
+609 | 				}),
+610 | 			);
+611 | 
+612 | 			expect(message.errorMessage).toBeUndefined();
+                                      ^
+error: expect(received).toBeUndefined()
+
+Received: "Request was aborted"
+
+      at <anonymous> (/Users/compoooter/coding/.worktrees.noindex/oh-my-pi/antigravity-stream-watchdog/packages/ai/test/google-gemini-cli-byte-watchdog.baseline.test.ts:612:33)
+(fail) Gemini CLI single endpoint retries a request that never sends headers on a fresh connection [104.77ms]
+
+ 1 pass
+ 5 fail
+ 21 expect() calls
+Ran 6 tests across 1 file. [7.51s]
