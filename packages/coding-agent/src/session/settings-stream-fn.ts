@@ -11,7 +11,7 @@
  * and OpenRouter response-cache hits across advisor calls.
  */
 import { fitOutputTokensToContextWindow, type StreamFn, Tokenizer } from "@oh-my-pi/pi-agent-core";
-import { type Model, type SimpleStreamOptions, streamSimple } from "@oh-my-pi/pi-ai";
+import { type Model, resolveAntigravityRequestEncoding, type SimpleStreamOptions, streamSimple } from "@oh-my-pi/pi-ai";
 import { openAIResponsesReplaysNativeHistory } from "@oh-my-pi/pi-ai/providers/openai-responses-state";
 import { serverSideFallbackModels } from "@oh-my-pi/pi-catalog/compat/server-side-fallback";
 import type { Settings } from "../config/settings";
@@ -24,7 +24,7 @@ import {
 	cfgProvidersAnthropicServerSideFallback,
 	cfgProvidersAnthropicSlowMode,
 	cfgProvidersAntigravityEndpoint,
-	cfgProvidersAntigravityRequestParity,
+	cfgProvidersAntigravityRequestEncoding,
 	cfgProvidersCacheRetention,
 	cfgProvidersMaxInFlightRequests,
 	cfgProvidersMuseCodeStoreResponses,
@@ -102,7 +102,7 @@ export function createSettingsAwareStreamFn(
 		const openrouterVariant =
 			openrouterRoutingPreset && openrouterRoutingPreset !== "default" ? openrouterRoutingPreset : undefined;
 		const antigravityEndpointMode = cfgProvidersAntigravityEndpoint.get(settings);
-		const antigravityRequestParity = cfgProvidersAntigravityRequestParity.get(settings) === "on";
+		const antigravityRequestEncoding = cfgProvidersAntigravityRequestEncoding.get(settings);
 		const textVerbosity =
 			model.api === "openai-codex-responses" || model.api === "openai-responses"
 				? cfgTextVerbosity.get(settings)
@@ -175,7 +175,7 @@ export function createSettingsAwareStreamFn(
 			preferWebsockets: resolveWebsocketPreference(settings, model, streamOptions?.preferWebsockets),
 			openrouterVariant: streamOptions?.openrouterVariant ?? openrouterVariant,
 			antigravityEndpointMode: streamOptions?.antigravityEndpointMode ?? antigravityEndpointMode,
-			antigravityRequestParity: streamOptions?.antigravityRequestParity ?? antigravityRequestParity,
+			...resolveAntigravityRequestEncoding(streamOptions, antigravityRequestEncoding),
 			textVerbosity: streamOptions?.textVerbosity ?? textVerbosity,
 			cacheRetention: streamOptions?.cacheRetention ?? cacheRetention,
 			streamFirstEventTimeoutMs: streamOptions?.streamFirstEventTimeoutMs ?? streamFirstEventTimeoutMs,

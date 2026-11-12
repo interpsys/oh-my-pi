@@ -213,21 +213,33 @@ export interface ConvertMessagesOptions {
 	 * previous model step are function responses alone.
 	 */
 	unsignedTurnOpeningSteps?: boolean;
+	/** Give every `functionCall` and `functionResponse` part its call id, whatever `compat.supportsFunctionPartId` says. */
+	functionPartIds?: boolean;
 	/**
-	 * Encode history like the official Antigravity 2.31.2 client: the model's
-	 * own unsigned thinking is not replayed (signed parts keep their slot),
-	 * function calls and responses carry their part ids, and each function
-	 * response is its own `model`-role content, in call order, instead of one
-	 * merged user turn. Signatures follow the normal replay policy.
+	 * Send each function response as its own `model`-role content, in call order,
+	 * instead of one merged user turn (the official Antigravity 2.31.2 placement).
 	 */
-	antigravityRequestParity?: boolean;
+	modelFunctionResponses?: boolean;
+	/**
+	 * Leave out the model's own thinking that streamed without a signature, as the
+	 * official Antigravity 2.31.2 client does; thinking stored with a signature
+	 * keeps its slot whether or not its signature replays.
+	 */
+	omitUnsignedThoughts?: boolean;
 }
 
-/** Whether the user contents after the last model step hold anything but function responses. */
+/**
+ * Whether the contents after the last model step hold anything but function
+ * responses. Function responses count as such in either role, so a step after
+ * `model`-role responses still continues the tool loop.
+ */
 function opensTurn(contents: readonly Content[]): boolean {
 	let sawFunctionResponse = false;
-	for (let index = contents.length - 1; index >= 0 && contents[index].role !== "model"; index--) {
-		for (const part of contents[index].parts ?? []) {
+	for (let index = contents.length - 1; index >= 0; index--) {
+		const content = contents[index];
+		const parts = content.parts ?? [];
+		if (content.role === "model" && !(parts.length > 0 && parts.every(part => part.functionResponse))) break;
+		for (const part of parts) {
 			if (!part.functionResponse) return true;
 			sawFunctionResponse = true;
 		}
@@ -246,8 +258,8 @@ export function convertMessages<T extends GoogleApiType>(
 	const contents: Content[] = [];
 	const emittedToolCallNames = new Map<string, string>();
 	const callOrder = new FunctionCallOrder();
-	const parity = options.antigravityRequestParity === true;
-	const includeFunctionPartIds = model.compat.supportsFunctionPartId || parity;
+	const includeFunctionPartIds = model.compat.supportsFunctionPartId || options.functionPartIds === true;
+	const modelFunctionResponses = options.modelFunctionResponses === true;
 
 	const transformedMessages = transformMessages(context.messages, model, id => normalizeToolCallId(id));
 
@@ -256,7 +268,7 @@ export function convertMessages<T extends GoogleApiType>(
 	// equal to number of function call parts"). Buffer image turns and flush them only after the
 	// merged functionResponse turn is complete, each result's images in its call's order.
 	let pendingToolImages: Array<{ ordinal: number | undefined; parts: Part[] }> = [];
-	// Parity: each function response is its own content; the run is pushed in call order.
+	// Model-role responses: each is its own content; the run is pushed in call order.
 	let pendingResponseContents: Array<{ ordinal: number | undefined; content: Content }> = [];
 	const flushToolResults = () => {
 		if (pendingResponseContents.length > 0) {
@@ -327,8 +339,14 @@ export function convertMessages<T extends GoogleApiType>(
 					// Skip empty thinking unless it carries the signature of a signature-only thought part
 					if ((!block.thinking || block.thinking.trim() === "") && !thoughtSignature) continue;
 					if (dropsUnsignedThinking && !thoughtSignature) continue;
-					// The official Antigravity client omits the thought summaries it streamed.
-					if (parity && isSameProviderAndModel && !thoughtSignature) continue;
+					// The official Antigravity client does not resend thought summaries it streamed unsigned.
+					if (
+						options.omitUnsignedThoughts === true &&
+						isSameProviderAndModel &&
+						!isValidThoughtSignature(block.thinkingSignature)
+					) {
+						continue;
+					}
 					if (isSameProviderAndModel) {
 						// The model's own thinking replays in the thought slot even unsigned: Gemini
 						// signs the part after a thought summary, not the summary, and replayed as
@@ -417,7 +435,7 @@ export function convertMessages<T extends GoogleApiType>(
 				},
 			};
 
-			if (parity) {
+			if (modelFunctionResponses) {
 				// The official Antigravity client sends each response as its own model-role content.
 				pendingResponseContents.push({
 					ordinal: callOrder.ordinal(msg.toolCallId),

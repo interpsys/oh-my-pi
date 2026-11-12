@@ -791,8 +791,86 @@ export interface LiveSteerClaim {
 	reject(): void;
 }
 
+/**
+ * Independent switches of the official Antigravity 2.31.2 request encoding,
+ * for `google-antigravity` Gemini models (catalog class `gemini`); other routes,
+ * including Antigravity Claude, ignore them. An unset switch follows
+ * {@link AntigravityRequestEncodingOptions.antigravityRequestParity}; a set one,
+ * `false` included, overrides it. All on is the official shape, all off the
+ * default encoding (docs/provider-quirks.md, "Official request parity").
+ */
+export interface AntigravityRequestComponentOptions {
+	/**
+	 * Replay the model's own real thought signatures (text, thinking and tool
+	 * calls) on steps that open a turn instead of sending those steps unsigned.
+	 * An unsigned first call still gets the bypass sentinel, and signatures from
+	 * another model never replay.
+	 */
+	antigravityKeepSignatures?: boolean;
+	/** Send `requestType: "agent"` on the request envelope. */
+	antigravityRequestTypeAgent?: boolean;
+	/** Give every `functionCall` and `functionResponse` part its tool-call id. */
+	antigravityFunctionIds?: boolean;
+	/** Send each tool result as its own `model`-role content, in call order, instead of one merged `user` turn. */
+	antigravityModelFunctionResponses?: boolean;
+	/** Omit `toolConfig`; a forced tool choice still reaches the model through its transcript directive. */
+	antigravityOmitToolConfig?: boolean;
+	/** Declare each tool as its own `tools` entry, its schema in Google Schema proto encoding. */
+	antigravityToolPacking?: boolean;
+	/** Leave out the model's own thought summaries that streamed without a signature. */
+	antigravityOmitUnsignedThoughts?: boolean;
+}
+
+/**
+ * Antigravity Gemini request encoding: the official-shape umbrella and its
+ * component overrides. `streamSimple`/`completeSimple` fill the switches a
+ * caller leaves unset from the process defaults set by
+ * `configureAntigravityRequestEncoding`.
+ */
+export interface AntigravityRequestEncodingOptions extends AntigravityRequestComponentOptions {
+	/**
+	 * google-antigravity Gemini only: the value of every component switch left
+	 * unset, so `true` alone encodes requests like the official Antigravity
+	 * client and unset or `false` keeps the default encoding.
+	 */
+	antigravityRequestParity?: boolean;
+}
+
+/** Every component switch of {@link AntigravityRequestComponentOptions}. */
+export const ANTIGRAVITY_REQUEST_COMPONENTS = [
+	"antigravityKeepSignatures",
+	"antigravityRequestTypeAgent",
+	"antigravityFunctionIds",
+	"antigravityModelFunctionResponses",
+	"antigravityOmitToolConfig",
+	"antigravityToolPacking",
+	"antigravityOmitUnsignedThoughts",
+] as const satisfies readonly (keyof AntigravityRequestComponentOptions)[];
+
+/**
+ * Resolves a caller's request-encoding switches over a layer of defaults
+ * (settings or process defaults). The umbrella and each component the caller
+ * sets win; each one it leaves unset takes the defaults' value, and a component
+ * still unset then takes the resolved umbrella. A component the defaults set
+ * therefore outranks the caller's umbrella, and an explicit `false` from either
+ * layer survives an umbrella that is on. Switches nothing sets stay absent.
+ */
+export function resolveAntigravityRequestEncoding(
+	options: AntigravityRequestEncodingOptions | undefined,
+	defaults: AntigravityRequestEncodingOptions,
+): AntigravityRequestEncodingOptions {
+	const umbrella = options?.antigravityRequestParity ?? defaults.antigravityRequestParity;
+	const resolved: AntigravityRequestEncodingOptions =
+		umbrella === undefined ? {} : { antigravityRequestParity: umbrella };
+	for (const component of ANTIGRAVITY_REQUEST_COMPONENTS) {
+		const value = options?.[component] ?? defaults[component] ?? umbrella;
+		if (value !== undefined) resolved[component] = value;
+	}
+	return resolved;
+}
+
 // Unified options with reasoning passed to streamSimple() and completeSimple()
-export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
+export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey">, AntigravityRequestEncodingOptions {
 	/**
 	 * API key for the request: either a static bearer string, or an
 	 * {@link ApiKeyResolver} that mints/rotates the key across the central
@@ -879,14 +957,6 @@ export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	cachedContent?: string;
 	/** Antigravity endpoint routing mode: "auto" (default with failover), "production", "sandbox". */
 	antigravityEndpointMode?: "auto" | "production" | "sandbox";
-	/**
-	 * google-antigravity Gemini only: encode requests like the official
-	 * Antigravity client (see docs/provider-quirks.md, "Official request parity").
-	 * Unset falls back to the process default set by
-	 * `configureAntigravityRequestParity` (off); an explicit `false` keeps the
-	 * default encoding. Other routes, including Antigravity Claude, ignore it.
-	 */
-	antigravityRequestParity?: boolean;
 	/**
 	 * Anthropic `server-side-fallback-2026-06-01` fallback chain (top-level
 	 * `fallbacks` request field). Opt-in ONLY — leaving this undefined is

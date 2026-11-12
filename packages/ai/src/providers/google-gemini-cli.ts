@@ -18,6 +18,7 @@ import * as AIError from "../error";
 import { oauthAccountKey } from "../auth/types";
 import type {
 	AntigravityModelWireProfile,
+	AntigravityRequestEncodingOptions,
 	Api,
 	AssistantMessage,
 	Context,
@@ -247,7 +248,7 @@ function consumePlanningBuffer(text: string, toolNames: Set<string>, isFinal = f
 		: { kind: "plain", visibleText: text };
 }
 
-export interface GoogleGeminiCliOptions extends StreamOptions {
+export interface GoogleGeminiCliOptions extends StreamOptions, AntigravityRequestEncodingOptions {
 	/**
 	 * Tool selection mode. String forms map directly to Gemini
 	 * `FunctionCallingConfigMode`. The object form forces a single named tool —
@@ -285,18 +286,6 @@ export interface GoogleGeminiCliOptions extends StreamOptions {
 	projectId?: string;
 	/** Antigravity endpoint routing mode: "auto" (default with failover), "production", "sandbox". */
 	antigravityEndpointMode?: "auto" | "production" | "sandbox";
-	/**
-	 * google-antigravity Gemini only: encode the request like the official
-	 * Antigravity 2.31.2 client. Every real thought signature replays (the
-	 * bypass sentinel only on an unsigned first call), unsigned thought
-	 * summaries are dropped, function calls and responses carry part ids with
-	 * each response its own `model`-role content in call order, the body carries
-	 * `requestType: "agent"` and no `toolConfig` (a forced choice keeps its
-	 * transcript directive), and each tool declaration is its own `tools` entry
-	 * in Google Schema encoding. Other routes, including Antigravity Claude,
-	 * ignore it.
-	 */
-	antigravityRequestParity?: boolean;
 	providerSessionState?: Map<string, ProviderSessionState>;
 	/** Optional override directory for empty-response diagnostic dumps (used in isolated tests). */
 	emptyResponseDumpDir?: string;
@@ -1530,14 +1519,24 @@ export function buildRequest(
 	// Captured failing bodies all succeed with those steps unsigned; tool-loop
 	// steps keep their signatures, so the reasoning chain across consecutive
 	// tool calls survives.
-	// `antigravityRequestParity` instead encodes Antigravity Gemini requests like
-	// four captured official 2.31.2 bodies, which replay every real signature;
-	// it stays off by default until a live A/B against this workaround passes.
-	const officialParity =
-		isAntigravity && model.identity.class === "gemini" && options.antigravityRequestParity === true;
+	// The `antigravity*` encoding switches instead select, one by one, the
+	// shape of four captured official 2.31.2 bodies; keeping signatures replays
+	// every real one. They stay off by default until live comparisons against
+	// this workaround pass.
+	const antigravityGemini = isAntigravity && model.identity.class === "gemini";
+	const parityDefault = options.antigravityRequestParity === true;
+	const keepSignatures = antigravityGemini && (options.antigravityKeepSignatures ?? parityDefault);
+	const functionIds = antigravityGemini && (options.antigravityFunctionIds ?? parityDefault);
+	const modelFunctionResponses = antigravityGemini && (options.antigravityModelFunctionResponses ?? parityDefault);
+	const omitUnsignedThoughts = antigravityGemini && (options.antigravityOmitUnsignedThoughts ?? parityDefault);
+	const toolPacking = antigravityGemini && (options.antigravityToolPacking ?? parityDefault);
+	const omitToolConfig = antigravityGemini && (options.antigravityOmitToolConfig ?? parityDefault);
+	const requestTypeAgent = antigravityGemini && (options.antigravityRequestTypeAgent ?? parityDefault);
 	const contents = convertMessages(model, context, {
-		unsignedTurnOpeningSteps: isAntigravity && model.identity.class === "gemini" && !officialParity,
-		antigravityRequestParity: officialParity,
+		unsignedTurnOpeningSteps: antigravityGemini && !keepSignatures,
+		functionPartIds: functionIds,
+		modelFunctionResponses,
+		omitUnsignedThoughts,
 	});
 	const generationConfig: CloudCodeAssistRequest["request"]["generationConfig"] = {};
 	if (options.temperature !== undefined) {
@@ -1595,7 +1594,7 @@ export function buildRequest(
 	}
 
 	if (context.tools && context.tools.length > 0) {
-		request.tools = officialParity
+		request.tools = toolPacking
 			? convertAntigravityParityTools(context.tools)
 			: isAntigravity
 				? normalizeAntigravityTools(convertTools(context.tools, model))
@@ -1632,14 +1631,14 @@ export function buildRequest(
 		}
 		// Antigravity's default tool mode is VALIDATED (verified for Gemini and
 		// Claude); an explicit non-auto tool choice above wins. The official
-		// client sends no `toolConfig` at all, so parity omits it; a forced
-		// choice still reaches the model through the directive above.
+		// client sends no `toolConfig` at all; with that switch a forced choice
+		// still reaches the model through the directive above.
 		if (isAntigravity && !toolConfig) {
 			toolConfig = {
 				functionCallingConfig: { mode: "VALIDATED" as FunctionCallingConfigMode },
 			};
 		}
-		if (toolConfig && !officialParity) request.toolConfig = toolConfig;
+		if (toolConfig && !omitToolConfig) request.toolConfig = toolConfig;
 	}
 
 	// Claude on Antigravity always forces VALIDATED, even with no tools declared.
@@ -1701,7 +1700,7 @@ export function buildRequest(
 			request,
 			model: wireModelId,
 			userAgent: "antigravity",
-			...(officialParity && { requestType: "agent" }),
+			...(requestTypeAgent && { requestType: "agent" }),
 		};
 	}
 

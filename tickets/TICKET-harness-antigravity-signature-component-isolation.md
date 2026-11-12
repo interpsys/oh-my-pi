@@ -7,7 +7,7 @@ Lane: harness
 Repo: interpsys/oh-my-pi
 Owner: CarbonOfficialParity-81556c038d06@chat
 Issuer: Main-d63ad71f069c (session omp:01a1cec4-6aa4-7447-a546-d63ad71f069c; host compoooters-macbook-pro)
-Created: 2026-11-12T21:22:57.514Z
+Created: 2026-11-12T21:22:57Z
 Pinned: 6ca1c55288fdb22253da14798177f70818452d6f
 Source: finding:/Users/compoooter/tmp/workers/carbon-official-parity/RESULT.md
 Files: packages/ai/src/providers/google-gemini-cli.ts, packages/ai/src/providers/google-shared.ts, packages/ai/src/types.ts, packages/ai/src/stream.ts, packages/ai/test/, packages/coding-agent/src/config/, packages/coding-agent/src/session/, packages/coding-agent/src/build-info.ts, packages/coding-agent/test/, packages/{ai,coding-agent}/CHANGELOG.md, docs/, tickets/

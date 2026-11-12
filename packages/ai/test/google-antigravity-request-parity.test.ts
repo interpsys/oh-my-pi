@@ -4,17 +4,19 @@ import {
 	type GoogleGeminiCliOptions,
 	getAntigravityProviderSessionState,
 } from "@oh-my-pi/pi-ai/providers/google-gemini-cli";
-import type { Content } from "@oh-my-pi/pi-ai/providers/google-types";
-import type {
-	AssistantMessage,
-	Context,
-	Message,
-	Model,
-	ProviderSessionState,
-	TJsonSchema,
-	Tool,
-	ToolCall,
-	Usage,
+import type { Content, Part } from "@oh-my-pi/pi-ai/providers/google-types";
+import {
+	ANTIGRAVITY_REQUEST_COMPONENTS,
+	type AntigravityRequestComponentOptions,
+	type AssistantMessage,
+	type Context,
+	type Message,
+	type Model,
+	type ProviderSessionState,
+	type TJsonSchema,
+	type Tool,
+	type ToolCall,
+	type Usage,
 } from "@oh-my-pi/pi-ai/types";
 import { normalizeSchemaForAntigravityGemini } from "@oh-my-pi/pi-ai/utils/schema";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -278,20 +280,303 @@ function buildConversation(options: GoogleGeminiCliOptions): Body[] {
 	});
 }
 
+type Component = keyof AntigravityRequestComponentOptions;
+
+/** One component switch set to `value`. */
+function only(component: Component, value: boolean): AntigravityRequestComponentOptions {
+	const options: AntigravityRequestComponentOptions = {};
+	options[component] = value;
+	return options;
+}
+
+/** Every component switch set to `value`. */
+function every(value: boolean): AntigravityRequestComponentOptions {
+	return Object.fromEntries(
+		ANTIGRAVITY_REQUEST_COMPONENTS.map(component => [component, value]),
+	) as AntigravityRequestComponentOptions;
+}
+
+// The preregistered arms set the umbrella and every component explicitly: A is
+// the baseline, C only keeps signatures, D only adds `requestType: "agent"`.
+const ARM_A: GoogleGeminiCliOptions = { antigravityRequestParity: false, ...every(false) };
+const ARM_C: GoogleGeminiCliOptions = { ...ARM_A, antigravityKeepSignatures: true };
+const ARM_D: GoogleGeminiCliOptions = { ...ARM_A, antigravityRequestTypeAgent: true };
+
+type WireRequest = Body & { contents: Content[] };
+
+/** The request of a captured or built wire body. */
+function requestOf(body: Body): WireRequest {
+	// Every body here is JSON of a Cloud Code Assist request, which always carries `request.contents`.
+	const request = body.request as WireRequest;
+	return request;
+}
+
+/** `body` with its request replaced by `edit(request)`. */
+function editRequest(body: Body, edit: (request: WireRequest) => Body): Body {
+	return { ...body, request: edit(requestOf(body)) };
+}
+
+/** `body` with every content part mapped through `edit`; `undefined` drops the part. */
+function editParts(body: Body, edit: (part: Part) => Part | undefined): Body {
+	return editRequest(body, request => ({
+		...request,
+		contents: request.contents.map(content => ({
+			...content,
+			parts: content.parts?.flatMap(part => edit(part) ?? []),
+		})),
+	}));
+}
+
+/** Exactly what each component alone changes in the captured conversation's baseline bodies. */
+const CAPTURED_DELTAS: Array<[Component, (body: Body, index: number) => Body]> = [
+	[
+		"antigravityKeepSignatures",
+		// The plain answer and the call open their turns: baseline sends them unsigned (the call with the sentinel).
+		body =>
+			editParts(body, part =>
+				part.text === "PLAIN_CAPTURE_OK"
+					? { ...part, thoughtSignature: SIG_PLAIN }
+					: part.functionCall
+						? { ...part, thoughtSignature: SIG_CALL }
+						: part,
+			),
+	],
+	["antigravityRequestTypeAgent", body => ({ ...body, requestType: "agent" })],
+	[
+		"antigravityFunctionIds",
+		body =>
+			editParts(body, part =>
+				part.functionCall
+					? { ...part, functionCall: { ...part.functionCall, id: CALL_ID } }
+					: part.functionResponse
+						? { ...part, functionResponse: { ...part.functionResponse, id: CALL_ID } }
+						: part,
+			),
+	],
+	[
+		"antigravityModelFunctionResponses",
+		body =>
+			editRequest(body, request => ({
+				...request,
+				contents: request.contents.map(content =>
+					content.parts?.every(part => part.functionResponse) ? { ...content, role: "model" } : content,
+				),
+			})),
+	],
+	[
+		"antigravityOmitToolConfig",
+		body =>
+			editRequest(body, request =>
+				Object.fromEntries(Object.entries(request).filter(([key]) => key !== "toolConfig")),
+			),
+	],
+	[
+		"antigravityToolPacking",
+		(body, index) =>
+			editRequest(body, request => ({ ...request, tools: requestOf(OFFICIAL_BODIES[index].body).tools })),
+	],
+	[
+		"antigravityOmitUnsignedThoughts",
+		body => editParts(body, part => (part.text === CALL_THOUGHT_SUMMARY ? undefined : part)),
+	],
+];
+
+const CLOCK = "[now 2026-11-12 1:26:04 PM PST Thu · 2026-11-12 21:26Z]";
+const SIG_OPEN_THOUGHT = "SigThoughtOnly00";
+const SIG_READ_A = "SigReadCallA";
+const SIG_LOOP_THOUGHT = "SigLoopThought00";
+const SIG_GREP = "SigGrepCall0";
+const SIG_FOUND = "SigFoundText";
+const SIG_EDIT_THOUGHT = "SigEditThought00";
+const SIG_EDIT_B = "SigEditCallB";
+const SIG_DONE = "SigDoneText0";
+const SIGNED_HISTORY_SIGNATURES = [
+	SIG_OPEN_THOUGHT,
+	SIG_READ_A,
+	SIG_LOOP_THOUGHT,
+	SIG_GREP,
+	SIG_FOUND,
+	SIG_EDIT_THOUGHT,
+	SIG_EDIT_B,
+	SIG_DONE,
+];
+
+function call(id: string, name: string, args: Record<string, unknown>, thoughtSignature?: string): ToolCall {
+	return { type: "toolCall", id, name, arguments: args, ...(thoughtSignature && { thoughtSignature }) };
+}
+
+function output(toolCallId: string, toolName: string, text: string, timestamp: number): Message {
+	return { role: "toolResult", toolCallId, toolName, content: [{ type: "text", text }], isError: false, timestamp };
+}
+
+/**
+ * A signed agent history shaped like the recorded sessions: two steps open a
+ * turn (after a prompt; after an injected clock line and a prompt) with an
+ * unsigned summary, a signed thought, a signature-only thought, and parallel
+ * calls signed first or second; the tool-loop steps between are signed.
+ */
+function signedHistory(model: Model): Message[] {
+	return [
+		{ role: "user", content: "Inspect a.ts and b.ts", timestamp: 1 },
+		step(
+			model,
+			[
+				{ type: "thinking", thinking: "Plan the read." },
+				{ type: "thinking", thinking: "", thinkingSignature: SIG_OPEN_THOUGHT },
+				call("call_read_a", "read_file", { Path: "/workspace/a.ts" }, SIG_READ_A),
+				call("call_read_b", "read_file", { Path: "/workspace/b.ts" }),
+			],
+			"toolUse",
+			2,
+		),
+		output("call_read_a", "read_file", "a.ts contents", 3),
+		output("call_read_b", "read_file", "b.ts contents", 4),
+		step(
+			model,
+			[
+				{ type: "thinking", thinking: "Both files read.", thinkingSignature: SIG_LOOP_THOUGHT },
+				call("call_grep", "grep_search", { Query: "bug" }, SIG_GREP),
+			],
+			"toolUse",
+			5,
+		),
+		output("call_grep", "grep_search", "a.ts:3: bug", 6),
+		step(model, [{ type: "text", text: "Found it in a.ts.", textSignature: SIG_FOUND }], "stop", 7),
+		{ role: "developer", content: CLOCK, timestamp: 8 },
+		{ role: "user", content: "Apply the fix", timestamp: 9 },
+		step(
+			model,
+			[
+				{ type: "thinking", thinking: "Edit now.", thinkingSignature: SIG_EDIT_THOUGHT },
+				call("call_edit_a", "replace_file_content", { TargetFile: "/workspace/a.ts" }),
+				call("call_edit_b", "replace_file_content", { TargetFile: "/workspace/b.ts" }, SIG_EDIT_B),
+			],
+			"toolUse",
+			10,
+		),
+		output("call_edit_a", "replace_file_content", "edited a.ts", 11),
+		output("call_edit_b", "replace_file_content", "edited b.ts", 12),
+		step(model, [{ type: "text", text: "Done.", textSignature: SIG_DONE }], "stop", 13),
+		{ role: "user", content: "Thanks", timestamp: 14 },
+	];
+}
+
+const responsePart = (name: string, text: string): Part => ({ functionResponse: { name, response: { output: text } } });
+
+/** The baseline (arm A) contents of {@link signedHistory}: steps opening a turn go unsigned, the tool loop stays signed. */
+const SIGNED_HISTORY_BASELINE: Content[] = [
+	{ role: "user", parts: [{ text: "Inspect a.ts and b.ts" }] },
+	{
+		role: "model",
+		parts: [
+			{ thought: true, text: "Plan the read." },
+			{ functionCall: { name: "read_file", args: { Path: "/workspace/a.ts" } }, thoughtSignature: SENTINEL },
+			{ functionCall: { name: "read_file", args: { Path: "/workspace/b.ts" } } },
+		],
+	},
+	{
+		role: "user",
+		parts: [responsePart("read_file", "a.ts contents"), responsePart("read_file", "b.ts contents")],
+	},
+	{
+		role: "model",
+		parts: [
+			{ thought: true, text: "Both files read.", thoughtSignature: SIG_LOOP_THOUGHT },
+			{ functionCall: { name: "grep_search", args: { Query: "bug" } }, thoughtSignature: SIG_GREP },
+		],
+	},
+	{ role: "user", parts: [responsePart("grep_search", "a.ts:3: bug")] },
+	{ role: "model", parts: [{ text: "Found it in a.ts.", thoughtSignature: SIG_FOUND }] },
+	{ role: "user", parts: [{ text: CLOCK }] },
+	{ role: "user", parts: [{ text: "Apply the fix" }] },
+	{
+		role: "model",
+		parts: [
+			{ thought: true, text: "Edit now." },
+			{
+				functionCall: { name: "replace_file_content", args: { TargetFile: "/workspace/a.ts" } },
+				thoughtSignature: SENTINEL,
+			},
+			{ functionCall: { name: "replace_file_content", args: { TargetFile: "/workspace/b.ts" } } },
+		],
+	},
+	{
+		role: "user",
+		parts: [responsePart("replace_file_content", "edited a.ts"), responsePart("replace_file_content", "edited b.ts")],
+	},
+	{ role: "model", parts: [{ text: "Done.", thoughtSignature: SIG_DONE }] },
+	{ role: "user", parts: [{ text: "Thanks" }] },
+];
+
+/**
+ * Arm C's contents of {@link signedHistory}: only the two turn-opening steps
+ * change, replaying their real signatures (the signature-only thought comes
+ * back with its signature, an unsigned first call keeps the sentinel, an
+ * unsigned second call stays bare); the unsigned summary still replays.
+ */
+const SIGNED_HISTORY_KEEP_SIGNATURES = SIGNED_HISTORY_BASELINE.with(1, {
+	role: "model",
+	parts: [
+		{ thought: true, text: "Plan the read." },
+		{ thought: true, text: "", thoughtSignature: SIG_OPEN_THOUGHT },
+		{ functionCall: { name: "read_file", args: { Path: "/workspace/a.ts" } }, thoughtSignature: SIG_READ_A },
+		{ functionCall: { name: "read_file", args: { Path: "/workspace/b.ts" } } },
+	],
+}).with(8, {
+	role: "model",
+	parts: [
+		{ thought: true, text: "Edit now.", thoughtSignature: SIG_EDIT_THOUGHT },
+		{
+			functionCall: { name: "replace_file_content", args: { TargetFile: "/workspace/a.ts" } },
+			thoughtSignature: SENTINEL,
+		},
+		{
+			functionCall: { name: "replace_file_content", args: { TargetFile: "/workspace/b.ts" } },
+			thoughtSignature: SIG_EDIT_B,
+		},
+	],
+});
+
+/** One request for `messages` on `model`, with the captured system prompt, tools and thinking setup. */
+function historyBody(model: Model<"google-gemini-cli">, messages: Message[], options: GoogleGeminiCliOptions): Body {
+	const context: Context = {
+		systemPrompt: followUp.request.systemInstruction.parts.map(part => part.text),
+		messages,
+		tools: OFFICIAL_TOOLS,
+	};
+	const request = buildRequest(
+		model,
+		context,
+		"<project>",
+		{
+			thinking: { enabled: true, level: "HIGH" },
+			maxTokens: 262144,
+			providerSessionState: new Map<string, ProviderSessionState>(),
+			...options,
+		},
+		true,
+	);
+	return normalizeEnvelope(wire(request));
+}
+
 describe("Antigravity Gemini official request parity", () => {
 	it("matches the four captured official bodies: signatures, roles, part ids, requestType, no toolConfig, tool packing and schemas", () => {
-		const bodies = buildConversation({ antigravityRequestParity: true });
-		for (const [index, { body }] of OFFICIAL_BODIES.entries()) {
-			expect(bodies[index]).toEqual(normalizeEnvelope(body));
-		}
+		const official = OFFICIAL_BODIES.map(({ body }) => normalizeEnvelope(body));
+		expect(buildConversation({ antigravityRequestParity: true })).toEqual(official);
+		// Every component on gives the same bodies, whatever the umbrella says.
+		expect(buildConversation(every(true))).toEqual(official);
+		expect(buildConversation({ antigravityRequestParity: false, ...every(true) })).toEqual(official);
 	});
 
-	it("keeps the baseline encoding when parity is off or unset", () => {
-		const off = buildConversation({ antigravityRequestParity: false });
+	it("keeps the baseline encoding with every component off, and when parity is off or unset", () => {
+		const off = buildConversation(ARM_A);
 		expect(buildConversation({})).toEqual(off);
+		expect(buildConversation({ antigravityRequestParity: false })).toEqual(off);
+		// Explicit component switches override the umbrella.
+		expect(buildConversation({ antigravityRequestParity: true, ...every(false) })).toEqual(off);
 
 		const followUpBody = off[3];
-		const request = followUpBody.request as { contents: Content[]; tools: unknown[]; toolConfig: unknown };
+		const request = requestOf(followUpBody);
 		expect("requestType" in followUpBody).toBe(false);
 		expect(request.toolConfig).toEqual({ functionCallingConfig: { mode: "VALIDATED" } });
 		expect(request.tools).toHaveLength(1);
@@ -314,20 +599,102 @@ describe("Antigravity Gemini official request parity", () => {
 		]);
 	});
 
+	it.each(CAPTURED_DELTAS)("%s alone changes only its own part of the captured bodies", (component, delta) => {
+		const baseline = buildConversation(ARM_A);
+		const expected = baseline.map(delta);
+		expect(expected).not.toEqual(baseline);
+		expect(buildConversation({ ...ARM_A, ...only(component, true) })).toEqual(expected);
+	});
+
+	it.each([...ANTIGRAVITY_REQUEST_COMPONENTS])("%s: set overrides the umbrella, unset inherits it", component => {
+		const allOn = buildConversation(every(true));
+		const umbrellaOnComponentOff = buildConversation({ antigravityRequestParity: true, ...only(component, false) });
+		expect(umbrellaOnComponentOff).toEqual(buildConversation({ ...every(true), ...only(component, false) }));
+		expect(umbrellaOnComponentOff).not.toEqual(allOn);
+		expect(buildConversation({ antigravityRequestParity: true, ...only(component, true) })).toEqual(allOn);
+		expect(buildConversation({ antigravityRequestParity: false, ...only(component, true) })).toEqual(
+			buildConversation({ ...ARM_A, ...only(component, true) }),
+		);
+	});
+
+	it("arm C differs from arm A only in the turn-opening signatures of a signed multi-turn history", () => {
+		const model = carbon();
+		const baseline = historyBody(model, signedHistory(model), ARM_A);
+		expect(requestOf(baseline).contents).toEqual(SIGNED_HISTORY_BASELINE);
+		expect(historyBody(model, signedHistory(model), ARM_C)).toEqual(
+			editRequest(baseline, request => ({ ...request, contents: SIGNED_HISTORY_KEEP_SIGNATURES })),
+		);
+	});
+
+	it("arm D differs from arm A only in requestType", () => {
+		const model = carbon();
+		const baseline = historyBody(model, signedHistory(model), ARM_A);
+		expect("requestType" in baseline).toBe(false);
+		expect(historyBody(model, signedHistory(model), ARM_D)).toEqual({ ...baseline, requestType: "agent" });
+		const capturedBaseline = buildConversation(ARM_A);
+		expect(buildConversation(ARM_D)).toEqual(capturedBaseline.map(body => ({ ...body, requestType: "agent" })));
+	});
+
+	it("model-role tool results alone keep the tool loop's signatures", () => {
+		const model = carbon();
+		const body = historyBody(model, signedHistory(model), { ...ARM_A, antigravityModelFunctionResponses: true });
+		// Each response becomes its own model-role content in call order; steps after
+		// them still continue the tool loop, so their signatures replay as in arm A.
+		expect(requestOf(body).contents).toEqual(
+			SIGNED_HISTORY_BASELINE.flatMap(content =>
+				content.parts?.every(part => part.functionResponse)
+					? content.parts.map(part => ({ role: "model", parts: [part] }))
+					: [content],
+			),
+		);
+	});
+
+	it("omitting unsigned thoughts alone drops only summaries stored without a signature", () => {
+		const model = carbon();
+		const body = historyBody(model, signedHistory(model), { ...ARM_A, antigravityOmitUnsignedThoughts: true });
+		// The opening step's unsigned summary goes; the signed thought of the later
+		// opening step stays in its slot, unsigned on the wire as in arm A.
+		expect(requestOf(body).contents).toEqual(
+			SIGNED_HISTORY_BASELINE.with(1, {
+				role: "model",
+				parts: SIGNED_HISTORY_BASELINE[1].parts?.filter(part => part.text !== "Plan the read."),
+			}),
+		);
+	});
+
+	it("arm C replays Hydrogen's own signatures and never transplants Carbon's onto Hydrogen", () => {
+		const hydrogen = hydrogenHigh();
+		expect(hydrogen.identity.class).toBe("gemini");
+
+		const own = historyBody(hydrogen, signedHistory(hydrogen), ARM_A);
+		expect(requestOf(own).contents).toEqual(SIGNED_HISTORY_BASELINE);
+		expect(historyBody(hydrogen, signedHistory(hydrogen), ARM_C)).toEqual(
+			editRequest(own, request => ({ ...request, contents: SIGNED_HISTORY_KEEP_SIGNATURES })),
+		);
+
+		// Carbon-attributed history on Hydrogen: no signature is Hydrogen's, so C sends exactly arm A's body.
+		const switched = historyBody(hydrogen, signedHistory(carbon()), ARM_C);
+		expect(switched).toEqual(historyBody(hydrogen, signedHistory(carbon()), ARM_A));
+		const wireText = JSON.stringify(switched);
+		for (const signature of SIGNED_HISTORY_SIGNATURES) expect(wireText).not.toContain(signature);
+	});
+
 	it("leaves Gemini CLI and Antigravity Claude requests unchanged", () => {
 		const cli = geminiCli();
 		const cliContext = contextAt(cli, 7);
-		expect(wire(buildRequest(cli, cliContext, "project", { antigravityRequestParity: true }, false))).toEqual(
-			wire(buildRequest(cli, cliContext, "project", {}, false)),
-		);
+		for (const options of [{ antigravityRequestParity: true }, every(true)]) {
+			expect(wire(buildRequest(cli, cliContext, "project", options, false))).toEqual(
+				wire(buildRequest(cli, cliContext, "project", {}, false)),
+			);
+		}
 
 		const claude = antigravityClaude();
 		const claudeContext = contextAt(claude, 7);
-		expect(
-			normalizeEnvelope(
-				wire(buildRequest(claude, claudeContext, "project", { antigravityRequestParity: true }, true)),
-			),
-		).toEqual(normalizeEnvelope(wire(buildRequest(claude, claudeContext, "project", {}, true))));
+		for (const options of [{ antigravityRequestParity: true }, every(true)]) {
+			expect(normalizeEnvelope(wire(buildRequest(claude, claudeContext, "project", options, true)))).toEqual(
+				normalizeEnvelope(wire(buildRequest(claude, claudeContext, "project", {}, true))),
+			);
+		}
 	});
 
 	it("replays Hydrogen's own signed text and calls, while Carbon-attributed history stays unsigned on Hydrogen", () => {
@@ -448,6 +815,26 @@ describe("Antigravity Gemini official request parity", () => {
 		);
 		expect(none.request.toolConfig).toBeUndefined();
 		expect(none.request.contents).toHaveLength(1);
+
+		// The switch alone omits toolConfig the same way; set off, it keeps toolConfig under the umbrella.
+		const omitOnly = buildRequest(
+			model,
+			context,
+			"project",
+			{ toolChoice: forced, ...ARM_A, antigravityOmitToolConfig: true },
+			true,
+		);
+		expect(omitOnly.request.toolConfig).toBeUndefined();
+		expect(omitOnly.request.contents).toEqual(on.request.contents);
+		const keepToolConfig = buildRequest(
+			model,
+			context,
+			"project",
+			{ toolChoice: forced, antigravityRequestParity: true, antigravityOmitToolConfig: false },
+			true,
+		);
+		expect(keepToolConfig.request.toolConfig).toEqual(off.request.toolConfig);
+		expect(keepToolConfig.request.contents).toEqual(on.request.contents);
 	});
 
 	it("encodes tool schemas as Google Schema proto JSON, keeping proto bounds and dropping what the proto lacks", () => {

@@ -24,7 +24,8 @@ import { DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS, MAX_WEB_SEARCH_TIMEOUT_SECONDS } fr
 import { DEFAULT_USAGE_RESERVE_PCT } from "@oh-my-pi/pi-ai/auth-storage";
 import { configureProviderStoreResponses } from "@oh-my-pi/pi-ai/providers/openai-responses-state";
 import { configureCodexAccessPrograms } from "@oh-my-pi/pi-ai/providers/openai-codex/access-programs";
-import { configureAntigravityRequestParity, configureProviderMaxInFlightRequests } from "@oh-my-pi/pi-ai/stream";
+import { configureAntigravityRequestEncoding, configureProviderMaxInFlightRequests } from "@oh-my-pi/pi-ai/stream";
+import type { AntigravityRequestEncodingOptions } from "@oh-my-pi/pi-ai/types";
 import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
 import { AUTO_THINKING, getConfiguredThinkingLevelMetadata, getThinkingLevelMetadata } from "@oh-my-pi/pi-tui/thinking";
@@ -1036,7 +1037,7 @@ export const cfgProvidersAntigravityRequestParity = register({
 		group: "Services",
 		label: "Antigravity Official Request Encoding",
 		description:
-			"Encode google-antigravity Gemini requests like the official Antigravity client. Off by default until a live comparison shows the official shape is no worse",
+			"Encode google-antigravity Gemini requests like the official Antigravity client: the value of every Antigravity request component left on Inherit. Off by default until a live comparison shows the official shape is no worse",
 		options: [
 			{
 				value: "off",
@@ -1051,9 +1052,171 @@ export const cfgProvidersAntigravityRequestParity = register({
 		],
 	},
 });
-// Sessions pass their own value per request; this process-wide default covers
+
+// Components of the official encoding, each `inherit` (follow the setting
+// above), `on` or `off`; a set component overrides it.
+const ANTIGRAVITY_COMPONENT_VALUES = ["inherit", "on", "off"] as const;
+const ANTIGRAVITY_COMPONENT_INHERIT = {
+	value: "inherit",
+	label: "Inherit",
+	description: "Follow Antigravity Official Request Encoding",
+} as const;
+
+export const cfgProvidersAntigravityKeepSignatures = register({
+	id: "providers.antigravityKeepSignatures",
+	type: "enum",
+	values: ANTIGRAVITY_COMPONENT_VALUES,
+	default: "inherit",
+	ui: {
+		tab: "providers",
+		group: "Services",
+		label: "Antigravity Keep Signatures",
+		description: "Replay real thought signatures on google-antigravity Gemini steps that open a turn",
+		options: [
+			ANTIGRAVITY_COMPONENT_INHERIT,
+			{ value: "on", label: "On", description: "Replay the model's own signatures on turn-opening steps" },
+			{ value: "off", label: "Off", description: "Turn-opening steps go unsigned (sentinel on an opening call)" },
+		],
+	},
+});
+
+export const cfgProvidersAntigravityRequestTypeAgent = register({
+	id: "providers.antigravityRequestTypeAgent",
+	type: "enum",
+	values: ANTIGRAVITY_COMPONENT_VALUES,
+	default: "inherit",
+	ui: {
+		tab: "providers",
+		group: "Services",
+		label: "Antigravity requestType Agent",
+		description: 'Send requestType "agent" on google-antigravity Gemini requests',
+		options: [
+			ANTIGRAVITY_COMPONENT_INHERIT,
+			{ value: "on", label: "On", description: 'Send requestType "agent"' },
+			{ value: "off", label: "Off", description: "Omit requestType" },
+		],
+	},
+});
+
+export const cfgProvidersAntigravityFunctionIds = register({
+	id: "providers.antigravityFunctionIds",
+	type: "enum",
+	values: ANTIGRAVITY_COMPONENT_VALUES,
+	default: "inherit",
+	ui: {
+		tab: "providers",
+		group: "Services",
+		label: "Antigravity Function Ids",
+		description: "Give google-antigravity Gemini function calls and responses their call ids",
+		options: [
+			ANTIGRAVITY_COMPONENT_INHERIT,
+			{ value: "on", label: "On", description: "Call ids on every function call and response" },
+			{ value: "off", label: "Off", description: "No part ids" },
+		],
+	},
+});
+
+export const cfgProvidersAntigravityModelFunctionResponses = register({
+	id: "providers.antigravityModelFunctionResponses",
+	type: "enum",
+	values: ANTIGRAVITY_COMPONENT_VALUES,
+	default: "inherit",
+	ui: {
+		tab: "providers",
+		group: "Services",
+		label: "Antigravity Model-Role Tool Results",
+		description: "Send each google-antigravity Gemini tool result as its own model-role turn",
+		options: [
+			ANTIGRAVITY_COMPONENT_INHERIT,
+			{ value: "on", label: "On", description: "One model-role turn per result, in call order" },
+			{ value: "off", label: "Off", description: "All results of a step in one user turn" },
+		],
+	},
+});
+
+export const cfgProvidersAntigravityOmitToolConfig = register({
+	id: "providers.antigravityOmitToolConfig",
+	type: "enum",
+	values: ANTIGRAVITY_COMPONENT_VALUES,
+	default: "inherit",
+	ui: {
+		tab: "providers",
+		group: "Services",
+		label: "Antigravity Omit toolConfig",
+		description: "Leave toolConfig off google-antigravity Gemini requests",
+		options: [
+			ANTIGRAVITY_COMPONENT_INHERIT,
+			{ value: "on", label: "On", description: "No toolConfig; a forced choice keeps its transcript directive" },
+			{ value: "off", label: "Off", description: "Send toolConfig (VALIDATED unless a tool choice is set)" },
+		],
+	},
+});
+
+export const cfgProvidersAntigravityToolPacking = register({
+	id: "providers.antigravityToolPacking",
+	type: "enum",
+	values: ANTIGRAVITY_COMPONENT_VALUES,
+	default: "inherit",
+	ui: {
+		tab: "providers",
+		group: "Services",
+		label: "Antigravity Tool Packing",
+		description: "Declare each google-antigravity Gemini tool separately, in Google Schema proto encoding",
+		options: [
+			ANTIGRAVITY_COMPONENT_INHERIT,
+			{ value: "on", label: "On", description: "One tools entry per declaration, official schema encoding" },
+			{ value: "off", label: "Off", description: "One tools entry for all declarations, CCA schema encoding" },
+		],
+	},
+});
+
+export const cfgProvidersAntigravityOmitUnsignedThoughts = register({
+	id: "providers.antigravityOmitUnsignedThoughts",
+	type: "enum",
+	values: ANTIGRAVITY_COMPONENT_VALUES,
+	default: "inherit",
+	ui: {
+		tab: "providers",
+		group: "Services",
+		label: "Antigravity Omit Unsigned Thoughts",
+		description: "Leave out the google-antigravity Gemini model's own thought summaries that streamed unsigned",
+		options: [
+			ANTIGRAVITY_COMPONENT_INHERIT,
+			{ value: "on", label: "On", description: "Do not resend unsigned thought summaries" },
+			{ value: "off", label: "Off", description: "Replay them in the thought slot" },
+		],
+	},
+});
+
+const antigravityComponentSwitch = (value: (typeof ANTIGRAVITY_COMPONENT_VALUES)[number]): boolean | undefined =>
+	value === "inherit" ? undefined : value === "on";
+
+/** Antigravity Gemini request encoding the settings select; `inherit` components stay unset, following the umbrella. */
+export const cfgProvidersAntigravityRequestEncoding = combine(
+	{
+		parity: cfgProvidersAntigravityRequestParity,
+		keepSignatures: cfgProvidersAntigravityKeepSignatures,
+		requestTypeAgent: cfgProvidersAntigravityRequestTypeAgent,
+		functionIds: cfgProvidersAntigravityFunctionIds,
+		modelFunctionResponses: cfgProvidersAntigravityModelFunctionResponses,
+		omitToolConfig: cfgProvidersAntigravityOmitToolConfig,
+		toolPacking: cfgProvidersAntigravityToolPacking,
+		omitUnsignedThoughts: cfgProvidersAntigravityOmitUnsignedThoughts,
+	},
+	(values): AntigravityRequestEncodingOptions => ({
+		antigravityRequestParity: values.parity === "on",
+		antigravityKeepSignatures: antigravityComponentSwitch(values.keepSignatures),
+		antigravityRequestTypeAgent: antigravityComponentSwitch(values.requestTypeAgent),
+		antigravityFunctionIds: antigravityComponentSwitch(values.functionIds),
+		antigravityModelFunctionResponses: antigravityComponentSwitch(values.modelFunctionResponses),
+		antigravityOmitToolConfig: antigravityComponentSwitch(values.omitToolConfig),
+		antigravityToolPacking: antigravityComponentSwitch(values.toolPacking),
+		antigravityOmitUnsignedThoughts: antigravityComponentSwitch(values.omitUnsignedThoughts),
+	}),
+);
+// Sessions layer their own values per request; these process-wide defaults cover
 // callers without a session stream function (titles, commit messages, memories).
-effect(cfgProvidersAntigravityRequestParity, value => configureAntigravityRequestParity(value === "on"));
+effect(cfgProvidersAntigravityRequestEncoding, configureAntigravityRequestEncoding);
 
 export const cfgProvidersFireworksTier = register({
 	id: "providers.fireworksTier",

@@ -2,7 +2,15 @@
 
 import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { CompactionPreparation } from "@oh-my-pi/pi-agent-core/compaction";
-import type { AssistantMessage, ImageContent, Message, Model, SimpleStreamOptions, TextContent } from "@oh-my-pi/pi-ai";
+import {
+	type AssistantMessage,
+	type ImageContent,
+	type Message,
+	type Model,
+	resolveAntigravityRequestEncoding,
+	type SimpleStreamOptions,
+	type TextContent,
+} from "@oh-my-pi/pi-ai";
 import { isRecord, logger } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import type { ModelRegistry } from "../config/model-registry";
@@ -30,7 +38,7 @@ import {
 	cfgModelLoopGuardCheckAssistantContent,
 	cfgModelLoopGuardEnabled,
 	cfgProvidersAntigravityEndpoint,
-	cfgProvidersAntigravityRequestParity,
+	cfgProvidersAntigravityRequestEncoding,
 	cfgProvidersMaxInFlightRequests,
 	cfgProvidersOpenrouterVariant,
 	validateProviderMaxInFlightRequests,
@@ -240,17 +248,19 @@ export class SessionProviderBoundary {
 				: undefined;
 		const antigravityEndpointMode =
 			provider === "google-antigravity" ? cfgProvidersAntigravityEndpoint.get(this.#host.settings) : undefined;
-		const antigravityRequestParity =
+		const antigravityRequestEncoding =
 			provider === "google-antigravity"
-				? (options.antigravityRequestParity ??
-					cfgProvidersAntigravityRequestParity.get(this.#host.settings) === "on")
+				? resolveAntigravityRequestEncoding(
+						options,
+						cfgProvidersAntigravityRequestEncoding.get(this.#host.settings),
+					)
 				: undefined;
 
 		const preparedOptions: SimpleStreamOptions = {
 			...options,
 			...(openrouterVariant !== undefined && { openrouterVariant }),
 			...(antigravityEndpointMode !== undefined && { antigravityEndpointMode }),
-			...(antigravityRequestParity !== undefined && { antigravityRequestParity }),
+			...antigravityRequestEncoding,
 			maxInFlightRequests: validateProviderMaxInFlightRequests(
 				options.maxInFlightRequests ?? cfgProvidersMaxInFlightRequests.get(this.#host.settings),
 			),

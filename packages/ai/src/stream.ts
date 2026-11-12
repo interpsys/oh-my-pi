@@ -62,18 +62,20 @@ import {
 	streamOpenAIResponses,
 } from "./providers/register-builtins";
 import { getProviderDefinition } from "./registry";
-import type {
-	Api,
-	AssistantMessage,
-	AssistantMessageEvent,
-	Context,
-	FetchImpl,
-	Model,
-	OptionsForApi,
-	SimpleStreamOptions,
-	StreamOptions,
-	ThinkingBudgets,
-	ToolChoice,
+import {
+	type AntigravityRequestEncodingOptions,
+	type Api,
+	type AssistantMessage,
+	type AssistantMessageEvent,
+	type Context,
+	type FetchImpl,
+	type Model,
+	type OptionsForApi,
+	resolveAntigravityRequestEncoding,
+	type SimpleStreamOptions,
+	type StreamOptions,
+	type ThinkingBudgets,
+	type ToolChoice,
 } from "./types";
 import { getHeaderCaseInsensitive, resolveCacheRetention } from "./utils";
 import { AssistantMessageEventStream } from "./utils/event-stream";
@@ -123,7 +125,7 @@ const PROVIDER_INFLIGHT_LOCK_RETRY_MAX_MS = 250;
 const PROVIDER_INFLIGHT_LOCK_RETRY_BUDGET_MS = 3_000;
 
 let configuredProviderMaxInFlightRequests: Record<string, number> = {};
-let configuredAntigravityRequestParity = false;
+let configuredAntigravityRequestEncoding: AntigravityRequestEncodingOptions = {};
 let providerInFlightRootOverride: string | undefined;
 let providerInFlightHeartbeatMsOverride: number | undefined;
 let providerInFlightHeartbeatFlushTimeoutMsOverride: number | undefined;
@@ -142,9 +144,13 @@ export function configureProviderMaxInFlightRequests(limits: Record<string, numb
 	configuredProviderMaxInFlightRequests = limits ?? {};
 }
 
-/** Process default for `SimpleStreamOptions.antigravityRequestParity`, for callers that leave it unset. */
-export function configureAntigravityRequestParity(enabled: boolean): void {
-	configuredAntigravityRequestParity = enabled;
+/**
+ * Process defaults for the `SimpleStreamOptions` Antigravity request-encoding
+ * switches (umbrella and components), each used where a caller leaves that
+ * switch unset. Replaces the previous defaults; `{}` restores the default encoding.
+ */
+export function configureAntigravityRequestEncoding(defaults: AntigravityRequestEncodingOptions): void {
+	configuredAntigravityRequestEncoding = { ...defaults };
 }
 
 function resolveProviderInFlightLimit(
@@ -2181,7 +2187,10 @@ function mapOptionsForApi<TApi extends Api>(
 		case "google-gemini-cli": {
 			const reasoning = options?.reasoning;
 			const toolChoice = mapGoogleToolChoice(options?.toolChoice);
-			const antigravityRequestParity = options?.antigravityRequestParity ?? configuredAntigravityRequestParity;
+			const antigravityRequestEncoding = resolveAntigravityRequestEncoding(
+				options,
+				configuredAntigravityRequestEncoding,
+			);
 			if (reasoning && model.reasoning && !options?.disableReasoning && !options?.forceReasoningOff) {
 				const effort = requireSupportedEffort(model, reasoning);
 
@@ -2203,7 +2212,7 @@ function mapOptionsForApi<TApi extends Api>(
 						hideThinkingSummary: options?.hideThinkingSummary,
 						toolChoice,
 						antigravityEndpointMode: options?.antigravityEndpointMode,
-						antigravityRequestParity,
+						...antigravityRequestEncoding,
 					});
 				}
 
@@ -2227,7 +2236,7 @@ function mapOptionsForApi<TApi extends Api>(
 						hideThinkingSummary: options?.hideThinkingSummary,
 						toolChoice,
 						antigravityEndpointMode: options?.antigravityEndpointMode,
-						antigravityRequestParity,
+						...antigravityRequestEncoding,
 					});
 				}
 				// Budget clamped to zero — fall through to the thinking-off path.
@@ -2245,7 +2254,7 @@ function mapOptionsForApi<TApi extends Api>(
 				thinking,
 				toolChoice,
 				antigravityEndpointMode: options?.antigravityEndpointMode,
-				antigravityRequestParity,
+				...antigravityRequestEncoding,
 			});
 		}
 

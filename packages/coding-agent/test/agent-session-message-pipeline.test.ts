@@ -1022,19 +1022,41 @@ describe("AgentSession message pipeline", () => {
 		expect(requestOnPayload).not.toHaveBeenCalled();
 	});
 
-	it("gives Antigravity side requests the session's request-parity setting unless the caller set it", () => {
+	it("gives Antigravity side requests the session's request-encoding settings unless the caller set them", () => {
 		const session = new AgentSession({
 			agent: createAgent(),
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false, "providers.antigravityRequestParity": "on" }),
+			settings: Settings.isolated({
+				"compaction.enabled": false,
+				"providers.antigravityRequestParity": "on",
+				"providers.antigravityRequestTypeAgent": "off",
+			}),
 			modelRegistry: {} as never,
 		});
 		sessions.push(session);
 
-		expect(session.prepareSimpleStreamOptions({}, "google-antigravity").antigravityRequestParity).toBe(true);
+		const inherited = session.prepareSimpleStreamOptions({}, "google-antigravity");
+		expect(inherited.antigravityRequestParity).toBe(true);
+		// An unset component follows the umbrella; a component set off overrides it.
+		expect(inherited.antigravityKeepSignatures).toBe(true);
+		expect(inherited.antigravityRequestTypeAgent).toBe(false);
+
 		const callerOff = session.prepareSimpleStreamOptions({ antigravityRequestParity: false }, "google-antigravity");
 		expect(callerOff.antigravityRequestParity).toBe(false);
+		expect(callerOff.antigravityKeepSignatures).toBe(false);
+		const callerComponents = session.prepareSimpleStreamOptions(
+			{ antigravityKeepSignatures: false, antigravityRequestTypeAgent: true },
+			"google-antigravity",
+		);
+		expect(callerComponents.antigravityKeepSignatures).toBe(false);
+		expect(callerComponents.antigravityRequestTypeAgent).toBe(true);
+		expect(callerComponents.antigravityFunctionIds).toBe(true);
+
+		const otherProvider = session.prepareSimpleStreamOptions({}, "google-gemini-cli");
+		expect(otherProvider.antigravityRequestParity).toBeUndefined();
+		expect(otherProvider.antigravityKeepSignatures).toBeUndefined();
 	});
+
 	it("lets an extension stream a context-aware side turn without persisting its exchange", async () => {
 		const api = "test-ephemeral-side-channel";
 		let capturedOptions: SimpleStreamOptions | undefined;

@@ -201,7 +201,7 @@ The Gemini CLI / Antigravity Claude path MUST run the same full `normalizeSchema
 
 ## 7) Antigravity Gemini official request parity (`normalizeSchemaForAntigravityGemini`)
 
-With `antigravityRequestParity`, Antigravity Gemini tool declarations follow four captured official 2.31.2 request bodies. Use `normalizeSchemaForAntigravityGemini` only for that wire (`convertAntigravityParityTools` in `google-gemini-cli.ts`); the default Antigravity path stays on §6.
+With `antigravityToolPacking` (or the `antigravityRequestParity` umbrella unless overridden), Antigravity Gemini tool declarations follow four captured official 2.31.2 request bodies. Use `normalizeSchemaForAntigravityGemini` only for that wire (`convertAntigravityParityTools` in `google-gemini-cli.ts`); the default Antigravity path stays on §6.
 
 1. Input is `toolWireSchema(tool)` directly; the `normalizeSchemaForGoogle` pass (synthetic `propertyOrdering`, spilled bounds) is not applied first.
 2. It runs the `normalizeSchemaForCCA` option set (combiner merging/collapse, nullable extraction, residual gate, per-tool fallback) plus string-only `enum`, except:

@@ -1394,7 +1394,7 @@ function toGoogleSchemaProtoJson(node: unknown): unknown {
 
 /**
  * Official Antigravity 2.31.2 Gemini `parameters` encoding (the
- * `antigravityRequestParity` wire): the Cloud Code Assist pipeline the
+ * `antigravityToolPacking` wire): the Cloud Code Assist pipeline the
  * Antigravity route already runs, except that it keeps the bounds Google's
  * Schema proto carries as typed fields, adds no `properties: {}` or
  * `propertyOrdering`, and emits proto JSON (upper-case types, string `int64`

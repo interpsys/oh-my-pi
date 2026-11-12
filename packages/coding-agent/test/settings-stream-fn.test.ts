@@ -1,6 +1,6 @@
 /**
  * Contract: `createSettingsAwareStreamFn` layers session provider settings
- * (`providers.openrouterVariant`, `providers.antigravityEndpoint`, `providers.antigravityRequestParity`,
+ * (`providers.openrouterVariant`, `providers.antigravityEndpoint`, the `providers.antigravity*` request encoding,
  * `providers.stream*TimeoutSeconds`, `providers.maxInFlightRequests`,
  * `model.loopGuard.*`, `textVerbosity` for Responses-family requests)
  * options win — the same wiring the main agent and the advisor agent share so
@@ -11,14 +11,17 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import { type Context, type Model, type SimpleStreamOptions, streamSimple } from "@oh-my-pi/pi-ai";
 import { configureProviderStoreResponses } from "@oh-my-pi/pi-ai/providers/openai-responses-state";
-import { configureAntigravityRequestParity } from "@oh-my-pi/pi-ai/stream";
+import { configureAntigravityRequestEncoding } from "@oh-my-pi/pi-ai/stream";
 import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { bindEffects } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
+	cfgProvidersAntigravityKeepSignatures,
+	cfgProvidersAntigravityRequestEncoding,
 	cfgProvidersAntigravityRequestParity,
+	cfgProvidersAntigravityRequestTypeAgent,
 	cfgProvidersMuseCodeStoreResponses,
 } from "@oh-my-pi/pi-coding-agent/session/settings";
 import {
@@ -567,10 +570,34 @@ describe("createSettingsAwareStreamFn", () => {
 		});
 	});
 
-	describe("providers.antigravityRequestParity (default off)", () => {
+	describe("Antigravity request encoding settings (umbrella off, components inherit)", () => {
 		const antigravityGemini = getBundledModel("google-antigravity", "gemini-3.1-pro");
 		if (!antigravityGemini) throw new Error("Expected bundled google-antigravity Gemini model");
-		const context: Context = { messages: [{ role: "user", content: "hi", timestamp: 0 }] };
+		const SIGNATURE = "SigOpenText0";
+		// The model's signed answer opens the next turn: it replays unsigned unless signatures are kept.
+		const context: Context = {
+			messages: [
+				{ role: "user", content: "hi", timestamp: 0 },
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "ok", textSignature: SIGNATURE }],
+					api: antigravityGemini.api,
+					provider: antigravityGemini.provider,
+					model: antigravityGemini.id,
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: 1,
+				},
+				{ role: "user", content: "again", timestamp: 2 },
+			],
+		};
 		const textSse = `data: ${JSON.stringify({
 			response: {
 				candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
@@ -587,16 +614,43 @@ describe("createSettingsAwareStreamFn", () => {
 			else process.env.PI_AI_ANTIGRAVITY_VERSION = savedAntigravityVersion;
 		});
 
-		/** Send one real Antigravity Gemini request via `send`; return the wire envelope's `requestType`. */
-		async function wireRequestType(send: (options: SimpleStreamOptions) => Promise<unknown>): Promise<unknown> {
-			const bodies: Array<Record<string, unknown>> = [];
+		interface WireEncoding {
+			requestType: unknown;
+			signature: unknown;
+		}
+		const BASELINE: WireEncoding = { requestType: undefined, signature: undefined };
+		const SIGNED: WireEncoding = { requestType: undefined, signature: SIGNATURE };
+		const AGENT: WireEncoding = { requestType: "agent", signature: undefined };
+		const OFFICIAL: WireEncoding = { requestType: "agent", signature: SIGNATURE };
+		// The preregistered arms: every switch explicit; C only keeps signatures, D only sends requestType.
+		const ARM_A: SimpleStreamOptions = {
+			antigravityRequestParity: false,
+			antigravityKeepSignatures: false,
+			antigravityRequestTypeAgent: false,
+			antigravityFunctionIds: false,
+			antigravityModelFunctionResponses: false,
+			antigravityOmitToolConfig: false,
+			antigravityToolPacking: false,
+			antigravityOmitUnsignedThoughts: false,
+		};
+		const ARM_C: SimpleStreamOptions = { ...ARM_A, antigravityKeepSignatures: true };
+		const ARM_D: SimpleStreamOptions = { ...ARM_A, antigravityRequestTypeAgent: true };
+
+		/** Send one real Antigravity Gemini request via `send`; return its `requestType` and the answer's signature. */
+		async function wireEncoding(send: (options: SimpleStreamOptions) => Promise<unknown>): Promise<WireEncoding> {
+			const bodies: Array<{
+				requestType?: unknown;
+				request: { contents: Array<{ parts?: Array<{ text?: string; thoughtSignature?: string }> }> };
+			}> = [];
 			const fetch = (async (_url: unknown, init?: RequestInit) => {
-				bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+				bodies.push(JSON.parse(String(init?.body)));
 				return new Response(textSse, { headers: { "content-type": "text/event-stream" } });
 			}) as FetchImpl;
 			await send({ apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }), fetch });
 			expect(bodies).toHaveLength(1);
-			return bodies[0]?.requestType;
+			const answer = bodies[0]?.request.contents[1]?.parts?.[0];
+			expect(answer?.text).toBe("ok");
+			return { requestType: bodies[0]?.requestType, signature: answer?.thoughtSignature };
 		}
 
 		/** A session turn: the settings-aware stream over the real `streamSimple`, with `caller` options on top. */
@@ -610,14 +664,60 @@ describe("createSettingsAwareStreamFn", () => {
 				return stream.result();
 			};
 
-		const rows: Array<[string, "on" | undefined, boolean | undefined, string | undefined]> = [
-			["keeps the existing encoding by default", undefined, undefined, undefined],
-			["sends the official envelope when the setting is on", "on", undefined, "agent"],
-			["lets a caller's explicit false override the setting", "on", false, undefined],
+		it("defaults the umbrella off and every component to inherit", () => {
+			expect(cfgProvidersAntigravityRequestEncoding.get(Settings.isolated())).toStrictEqual({
+				antigravityRequestParity: false,
+				antigravityKeepSignatures: undefined,
+				antigravityRequestTypeAgent: undefined,
+				antigravityFunctionIds: undefined,
+				antigravityModelFunctionResponses: undefined,
+				antigravityOmitToolConfig: undefined,
+				antigravityToolPacking: undefined,
+				antigravityOmitUnsignedThoughts: undefined,
+			});
+		});
+
+		const UMBRELLA_ON = { "providers.antigravityRequestParity": "on" };
+		const rows: Array<[string, Record<string, string>, SimpleStreamOptions, WireEncoding]> = [
+			["keeps the existing encoding by default", {}, {}, BASELINE],
+			["sends the official shape when the umbrella is on", UMBRELLA_ON, {}, OFFICIAL],
+			[
+				"lets a caller's explicit umbrella false override the setting",
+				UMBRELLA_ON,
+				{ antigravityRequestParity: false },
+				BASELINE,
+			],
+			["turns one component on alone", { "providers.antigravityKeepSignatures": "on" }, {}, SIGNED],
+			[
+				"lets a component setting off override the umbrella setting",
+				{ ...UMBRELLA_ON, "providers.antigravityRequestTypeAgent": "off" },
+				{},
+				SIGNED,
+			],
+			[
+				"lets a caller's component false override the settings",
+				UMBRELLA_ON,
+				{ antigravityKeepSignatures: false },
+				AGENT,
+			],
+			[
+				"lets a caller's component true override a component setting off",
+				{ "providers.antigravityRequestTypeAgent": "off" },
+				{ antigravityRequestTypeAgent: true },
+				AGENT,
+			],
+			[
+				"applies a caller's umbrella only to components the settings leave on inherit",
+				{ "providers.antigravityKeepSignatures": "off" },
+				{ antigravityRequestParity: true },
+				AGENT,
+			],
+			["sends arm A as the baseline under an umbrella setting on", UMBRELLA_ON, ARM_A, BASELINE],
+			["sends arm C with signatures only", UMBRELLA_ON, ARM_C, SIGNED],
+			["sends arm D with requestType only", UMBRELLA_ON, ARM_D, AGENT],
 		];
-		it.each(rows)("%s", async (_label, setting, antigravityRequestParity, expected) => {
-			const settings = Settings.isolated(setting ? { "providers.antigravityRequestParity": setting } : {});
-			expect(await wireRequestType(viaSession(settings, { antigravityRequestParity }))).toBe(expected);
+		it.each(rows)("%s", async (_label, setting, caller, expected) => {
+			expect(await wireEncoding(viaSession(Settings.isolated(setting), caller))).toEqual(expected);
 		});
 
 		it("applies to direct side requests through the bound settings", async () => {
@@ -625,14 +725,25 @@ describe("createSettingsAwareStreamFn", () => {
 			// without the settings-aware stream; the process-wide effect covers them.
 			const settings = Settings.isolated();
 			const release = bindEffects(settings);
-			const direct = (options: SimpleStreamOptions) => streamSimple(antigravityGemini, context, options).result();
+			const direct =
+				(caller: SimpleStreamOptions = {}) =>
+				(options: SimpleStreamOptions) =>
+					streamSimple(antigravityGemini, context, { ...options, ...caller }).result();
 			try {
-				expect(await wireRequestType(direct)).toBeUndefined();
+				expect(await wireEncoding(direct())).toEqual(BASELINE);
+				cfgProvidersAntigravityKeepSignatures.set(settings, "on");
+				expect(await wireEncoding(direct())).toEqual(SIGNED);
 				cfgProvidersAntigravityRequestParity.set(settings, "on");
-				expect(await wireRequestType(direct)).toBe("agent");
+				expect(await wireEncoding(direct())).toEqual(OFFICIAL);
+				cfgProvidersAntigravityRequestTypeAgent.set(settings, "off");
+				expect(await wireEncoding(direct())).toEqual(SIGNED);
+				// An explicit caller value still wins over the configured defaults.
+				expect(await wireEncoding(direct({ antigravityKeepSignatures: false }))).toEqual(BASELINE);
+				expect(await wireEncoding(direct(ARM_D))).toEqual(AGENT);
+				expect(await wireEncoding(direct(ARM_A))).toEqual(BASELINE);
 			} finally {
 				release();
-				configureAntigravityRequestParity(false);
+				configureAntigravityRequestEncoding({});
 			}
 		});
 	});
