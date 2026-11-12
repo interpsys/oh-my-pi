@@ -150,6 +150,8 @@ describe("task.batch schema gating", () => {
 		cfgTaskEnableEffort.override(flatSession.settings, true);
 		expect(getSchemaProperties(flat).effort).toBeDefined();
 		expect(flat.description).toContain("`effort`");
+		expect(flat.description).toContain("omit by default");
+		expect(flat.description).toContain("Volume of work never raises it");
 
 		const batchSession = createSession({ settings: { "task.batch": true } });
 		const batch = await TaskTool.create(batchSession);
@@ -159,6 +161,20 @@ describe("task.batch schema gating", () => {
 		cfgTaskEnableEffort.override(batchSession.settings, true);
 		expect(getBatchItemProperties(batch).effort).toBeDefined();
 		expect(batch.description).toContain("`effort`");
+	});
+
+	it.each([false, true])("rejects max as a task effort before dispatch (batch=%s)", async batch => {
+		mockDiscovery();
+		const spawn = vi.spyOn(executorModule, "runSubprocess");
+		const tool = await TaskTool.create(
+			createSession({ settings: { "task.batch": batch, "task.enableEffort": true, "async.enabled": false } }),
+		);
+		// Internal/stale-transcript calls bypass the wire enum, but still reach validateEffort.
+		const item = { task: "Reply OK.", solutionSpace: "One exact response.", effort: "max" };
+		const params = (batch ? { context: "Shared.", tasks: [item] } : item) as unknown as TaskParams;
+		const result = await tool.execute("tc-invalid-effort", params);
+		expect(getFirstText(result)).toContain('invalid `effort` value "max". Use "lo", "med", or "hi".');
+		expect(spawn).not.toHaveBeenCalled();
 	});
 
 	it("keeps isolation boolean-only in the batch item schema", async () => {

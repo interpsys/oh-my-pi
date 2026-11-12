@@ -7,6 +7,7 @@ import {
 	assertModelSupportsEffortCeiling,
 	clampThinkingLevelToCeiling,
 	modelSupportsEffortCeiling,
+	resolveTaskEffortLevel,
 } from "../src/thinking";
 
 function customReasoner(): Model {
@@ -69,5 +70,32 @@ describe("clampThinkingLevelToCeiling", () => {
 	it("accepts models with no controllable effort surface", () => {
 		const model = { ...customReasoner(), reasoning: false, thinking: undefined };
 		expect(modelSupportsEffortCeiling(model, Effort.Minimal)).toBe(true);
+	});
+});
+
+describe("resolveTaskEffortLevel", () => {
+	it.each([Effort.Low, Effort.Medium, Effort.High, ThinkingLevel.Off, "auto" as const])(
+		"preserves the configured default %s for med rather than selecting a midpoint",
+		level => {
+			expect(resolveTaskEffortLevel(customReasoner(), "med", undefined, level)).toBe(level);
+		},
+	);
+
+	it("caps med's configured default and leaves endpoint mappings unchanged", () => {
+		const model = customReasoner();
+		expect(resolveTaskEffortLevel(model, "med", Effort.Low, Effort.High)).toBe(Effort.Low);
+		expect(resolveTaskEffortLevel(model, "lo", undefined, Effort.High)).toBe(Effort.Low);
+		expect(resolveTaskEffortLevel(model, "hi", undefined, Effort.Low)).toBe(Effort.High);
+		expect(resolveTaskEffortLevel(model, "hi", Effort.Medium, Effort.Low)).toBe(Effort.Medium);
+		expect(resolveTaskEffortLevel(undefined, "med", undefined, Effort.Low)).toBe(Effort.Low);
+	});
+
+	it("retains default fallback and rejects an incompatible ceiling", () => {
+		expect(resolveTaskEffortLevel(customReasoner(), "med")).toBeUndefined();
+		const model = { ...customReasoner(), reasoning: false, thinking: undefined };
+		expect(resolveTaskEffortLevel(model, "med", undefined, Effort.High)).toBeUndefined();
+		expect(() => resolveTaskEffortLevel(customReasoner(), "med", Effort.Minimal, Effort.High)).toThrow(
+			"has no supported thinking effort at or below task.maxEffort=minimal",
+		);
 	});
 });

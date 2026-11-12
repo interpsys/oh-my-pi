@@ -4828,10 +4828,9 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			if (model?.contextWindow && model.contextWindow > 0) {
 				progress.contextWindow = model.contextWindow;
 			}
-			// Caller-requested coarse effort maps onto the resolved model's
-			// supported range, then respects the operator-configured ceiling.
-			// Undefined (no effort, or no controllable effort surface) falls
-			// through to the normal selectors below.
+			// Caller-requested lo/hi select the model's range endpoints; med
+			// preserves the role's configured default. All hints respect the ceiling.
+			// Models without a controllable effort surface retain normal selectors.
 			// The ceiling outlives initial resolution: it rides into the session so
 			// retry-fallback recovery can never clamp effort back up past it.
 			// A per-call `model` is caller-chosen too, so its `:level` is held to the same
@@ -4840,14 +4839,17 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			const spawnEffortCeiling =
 				options.effort !== undefined || options.perCallModelGrants ? cfgTaskMaxEffort.get(settings) : undefined;
 			if (model && spawnEffortCeiling) assertModelSupportsEffortCeiling(model, spawnEffortCeiling);
-			const effortLevel =
-				options.effort !== undefined
-					? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
-					: undefined;
 			const explicitLevel =
 				explicitThinkingLevel && resolvedThinkingLevel !== AUTO_THINKING
 					? clampThinkingLevelToCeiling(model, resolvedThinkingLevel, spawnEffortCeiling)
 					: resolvedThinkingLevel;
+			const defaultLevel = explicitThinkingLevel ? explicitLevel : (thinkingLevel ?? resolvedThinkingLevel);
+			// With no role selector, med stays undefined so SDK startup resolves the
+			// same model/settings default as omission; the ceiling still rides along.
+			const effortLevel =
+				options.effort !== undefined
+					? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling, defaultLevel)
+					: undefined;
 			if (model) {
 				const displayLevel = effortLevel ?? (explicitThinkingLevel ? explicitLevel : undefined);
 				progress.resolvedModelIdentity = formatModelStringWithRouting(model);
@@ -4857,11 +4859,9 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 						? formatModelSelectorValue(progress.resolvedModelIdentity, displayLevel)
 						: progress.resolvedModelIdentity;
 			}
-			// Precedence: caller `effort` > explicit `:level` suffix on the resolved
-			// model pattern > agent-definition default (e.g. task's `auto`) >
-			// pattern-derived level.
-			const effectiveThinkingLevel =
-				effortLevel ?? (explicitThinkingLevel ? explicitLevel : (thinkingLevel ?? resolvedThinkingLevel));
+			// Precedence: lo/hi hint > explicit model :level > agent-definition
+			// default > pattern-derived level. med keeps that default hierarchy.
+			const effectiveThinkingLevel = effortLevel ?? defaultLevel;
 			resolvedAt = performance.now();
 			const effectiveCwd = worktree ?? cwd;
 			const fork = preparedSession?.fork;
