@@ -75,6 +75,10 @@ export const launchHelp = {
 		models: Flags.string({ description: `Comma-separated model patterns for ${formatKeyHint("ctrl+p")} cycling` }),
 		"no-tools": Flags.boolean({ description: "Disable all built-in tools" }),
 		"no-lsp": Flags.boolean({ description: "Disable LSP tools, formatting, and diagnostics" }),
+		"no-mcp": Flags.boolean({
+			description:
+				"Skip MCP for this process: no server discovery, startup, or MCP tools; settings and mcp.json stay untouched (also OMP_NO_MCP=1)",
+		}),
 		"no-pty": Flags.boolean({ description: "Disable PTY-based interactive bash execution" }),
 		tools: Flags.string({ description: "Comma-separated list of tools to enable (default: all)" }),
 		thinking: Flags.string({

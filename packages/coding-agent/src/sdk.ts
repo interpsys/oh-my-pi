@@ -154,6 +154,7 @@ import {
 	deduplicateMCPToolsByName,
 	discoverAndLoadMCPTools,
 	getMCPToolOriginKey,
+	isMCPDisabledForProcess,
 	type MCPLoadResult,
 	MCPManager,
 	type MCPManagerApi,
@@ -2825,8 +2826,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			evalActive: activeToolNames.has("eval"),
 		});
 
-		// Restricted sessions cannot inherit or discover MCP capabilities.
-		const enableMCP = !restrictToolNames && (options.enableMCP ?? true);
+		// Restricted sessions cannot inherit or discover MCP capabilities, nor can a
+		// process opted out with `--no-mcp` / `OMP_NO_MCP=1`.
+		const enableMCP = !restrictToolNames && (options.enableMCP ?? true) && !isMCPDisabledForProcess();
 		let mcpManager: MCPManagerApi | undefined = enableMCP ? options.mcpManager : undefined;
 		// A subagent worker thread never connects MCP servers itself: it reuses the main thread's manager.
 		if (enableMCP && !mcpManager && !isMainThread()) mcpManager = MCPManager.instance();

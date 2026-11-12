@@ -76,13 +76,12 @@ interface StreamLimits {
 	openAIIdleEnvFloorsFirstEvent?: boolean;
 }
 /**
- * Cloud Code Assist owns first-event detection because Antigravity can return
- * successful headers and then never emit an SSE event. Keeping the watchdog in
- * the provider lets it fail over before surfacing an error; the shared wrapper
- * still catches post-first-event stalls.
+ * Cloud Code Assist watches raw response bytes through headers and body.
+ * An event-level watchdog would incorrectly abort partial frames or thinking
+ * traffic and race the provider's endpoint failover.
  */
 const GOOGLE_GEMINI_CLI_STREAM_LIMITS: StreamLimits = {
-	providerHandlesFirstEventTimeouts: true,
+	providerHandlesStreamTimeouts: true,
 };
 
 const PROVIDER_HANDLED_STREAM_TIMEOUTS: StreamLimits = {

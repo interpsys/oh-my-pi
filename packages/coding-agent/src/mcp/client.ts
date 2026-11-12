@@ -6,6 +6,7 @@
 import * as path from "node:path";
 import * as url from "node:url";
 import { getProjectDir, logger, untilAborted, withTimeout } from "@oh-my-pi/pi-utils";
+import { isMCPDisabledForProcess, MCPProcessOptOutError } from "./process-opt-out";
 import { describeMCPTimeout, isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "./timeout";
 import { createHttpTransport } from "./transports/http";
 import { LegacySseConnectionTimeoutError, createSseTransport } from "./transports/sse";
@@ -157,6 +158,8 @@ export async function connectToServer(
 		onRequest?: (method: string, params: unknown) => Promise<unknown>;
 	},
 ): Promise<MCPServerConnection> {
+	// Every MCP server start funnels through here, so a later explicit connect cannot bypass the opt-out.
+	if (isMCPDisabledForProcess()) throw new MCPProcessOptOutError(name);
 	// `withTimeout` rejects a pre-aborted signal without observing `connect()`; never start one.
 	options?.signal?.throwIfAborted();
 	const timeoutMs = resolveMCPTimeoutMs(config.timeout);
