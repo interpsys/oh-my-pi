@@ -10,6 +10,7 @@
 
 ### Changed
 
+- Task spawns default to the role's configured thinking level; `effort: "med"` now preserves that default instead of selecting the model range midpoint, while `lo`/`hi` and `task.maxEffort` retain their mappings. The tool guidance recommends omitting effort unless deliberately changing it.
 - Eval `tool.mcp__<server>_<tool>(...)` returns the MCP payload itself (`structuredContent`, else the JSON-decoded text, else the text), and an MCP error result raises instead of returning a flagged object; MCP image blocks still display
 - Python eval `b = await judge_batch(...)` waits until every item settled and returns the batch; a plain call still returns at once
 - A subagent's soft request-budget notice is now a `<system-notice source="harness" kind="request-budget">` block that says it is an automatic harness message, not from the user or the parent, and asks the child to save its work, record running children, jobs and sandboxes, and hand off without cancelling them. The forced wrap-up reminder at 1.5× the budget likewise names itself an automatic harness stop and asks the child to name running work with its harvest/stop commands so the parent can adopt it

@@ -311,14 +311,14 @@ export function clampAutoThinkingEffort(
 /** Coarse per-spawn effort selectors accepted by the task tool. */
 export const TASK_EFFORTS = ["lo", "med", "hi"] as const;
 
-/** Coarse task-spawn effort: the lowest, middle, or highest thinking level the target model supports. */
+/** Coarse task-spawn effort: the model's lowest level, the role default, or its highest level. */
 export type TaskEffort = (typeof TASK_EFFORTS)[number];
 
 /**
  * Maps a coarse task effort onto the model's supported thinking range:
  * `lo` = lowest supported level, `hi` = highest (whatever the model tops out
- * at — high, xhigh, or max), `med` = the middle (lower of the two middles for
- * an even-sized range). Without a model, maps over the full canonical range.
+ * at — high, xhigh, or max), `med` = the supplied role default, not the range
+ * midpoint. Without a model, endpoints use the full canonical range.
  * Returns `undefined` when the model has no controllable effort surface, so
  * callers fall back to their default selector (e.g. `auto`). Throws when the
  * configured ceiling is below the model's lowest supported effort.
@@ -327,16 +327,18 @@ export function resolveTaskEffortLevel(
 	model: Model | undefined,
 	effort: TaskEffort,
 	maxEffort?: Effort,
-): Effort | undefined {
+	defaultLevel?: ConfiguredThinkingLevel | ThinkingLevel,
+): ConfiguredThinkingLevel | ThinkingLevel | undefined {
 	const supported = model ? getSupportedEfforts(model) : THINKING_EFFORTS;
 	if (supported.length === 0) return undefined;
+	if (effort === "med") {
+		if (model && maxEffort !== undefined) assertModelSupportsEffortCeiling(model, maxEffort);
+		return defaultLevel === "auto" ? defaultLevel : clampThinkingLevelToCeiling(model, defaultLevel, maxEffort);
+	}
 	let resolved: Effort;
 	switch (effort) {
 		case "lo":
 			resolved = supported[0];
-			break;
-		case "med":
-			resolved = supported[(supported.length - 1) >> 1];
 			break;
 		case "hi":
 			resolved = supported[supported.length - 1];

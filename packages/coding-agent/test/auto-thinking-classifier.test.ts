@@ -465,11 +465,10 @@ describe("auto thinking classifier helpers", () => {
 			maxTokens: 4096,
 		});
 
-		// hi = whatever the model tops out at; lo = its floor; med = middle of
-		// the supported range (lower-middle for an even-sized range).
+		// hi = whatever the model tops out at; lo = its floor; med = the role default.
 		expect(resolveTaskEffortLevel(xhighCeilingModel, "hi")).toBe(Effort.XHigh);
 		expect(resolveTaskEffortLevel(xhighCeilingModel, "lo")).toBe(Effort.Low);
-		expect(resolveTaskEffortLevel(xhighCeilingModel, "med")).toBe(Effort.Medium);
+		expect(resolveTaskEffortLevel(xhighCeilingModel, "med", undefined, Effort.Low)).toBe(Effort.Low);
 
 		const sonnet = getBundledModel("anthropic", "claude-sonnet-4-6");
 		if (!sonnet) throw new Error("Expected bundled Claude Sonnet 4.6 model");
