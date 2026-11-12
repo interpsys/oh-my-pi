@@ -2,7 +2,8 @@
 
 Schema-Version: 2
 Kind: feature
-Status: IN_PROGRESS
+Status: DONE
+Resolving-Commit: ca8568bb1e8dd7923dd15e8b7bbebc3b41c391b2
 Lane: harness
 Repo: https://github.com/interpsys/oh-my-pi
 Owner: AntigravityStreamStallFix-749006bb6bc0@chat
@@ -51,8 +52,9 @@ OMP_NO_MCP=1 ~/.local/share/omp/bin/omp -p --model google-antigravity/gemini-4-c
 
 ## Resolution
 
-Implemented process gate, CLI/SDK plumbing and stdio fixture tests. Corrected the initial nonexistent args.test.ts acceptance command to the dedicated real-server fixture test; no acceptance criterion changed or dropped. Original acceptance hash 72a29186883e4e6be1adeb40f9177632ed6c115cd580bddabc77244ab749536e; corrected hash b8a110759f686f74875708b6875a8ed08600b1dc53da42e04ac1c60dd54fe281. Parent owns final verification, landing, shared release/install and native ticket closure.
+Resolved by merge ca8568bb1e8dd7923dd15e8b7bbebc3b41c391b2 (PR #21), release v18.18.5-orb.7, installed --help and live OMP_NO_MCP=1 Carbon smoke NO_MCP_OK. Real stdio fixture default/flag/env controls: 15 pass/0 fail; no persisted config changes; later explicit connects blocked. TS/lint/format pass; full root Rust check limited by missing Ninja and canceled after completed TS receipts, with no configured release-line CI. Evidence: tickets/evidence-antigravity-stream-byte-watchdog.txt and https://github.com/interpsys/oh-my-pi/releases/tag/v18.18.5-orb.7. Initial nonexistent args.test.ts acceptance command was corrected to the dedicated stdio test; no criterion changed or dropped. Original acceptance hash 72a29186883e4e6be1adeb40f9177632ed6c115cd580bddabc77244ab749536e; corrected hash b8a110759f686f74875708b6875a8ed08600b1dc53da42e04ac1c60dd54fe281.
 
 ## Log
 
 - 2026-11-12T09:31:46Z filed per Main-d63ad71f069c user request in the same authorized orb.7 release; no prior behavior defect claimed.
+- Native orb ticket close recorded DONE at resolving merge ca8568bb1e8dd7923dd15e8b7bbebc3b41c391b2 with stdio controls and installed-binary help/live-smoke evidence.

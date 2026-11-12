@@ -2,7 +2,8 @@
 
 Schema-Version: 2
 Kind: defect
-Status: IN_PROGRESS
+Status: DONE
+Resolving-Commit: ca8568bb1e8dd7923dd15e8b7bbebc3b41c391b2
 Lane: harness
 Repo: https://github.com/interpsys/oh-my-pi
 Owner: AntigravityStreamStallFix-749006bb6bc0@chat
@@ -60,10 +61,11 @@ shasum -a 256 ~/.local/share/omp/bin/omp
 
 ## Resolution
 
-Implementation in progress. Resolving SHA and empirical evidence will be recorded by native ticket closure. Scope change approved by Main-d63ad71f069c in-session at 2026-11-12T09:20Z: defaults 120→300s to preserve observed146s cold starts; additionally bound/log empty STOP retries and expose changed-prompt continuation. Original acceptance hash 2691fe4e214e62fbb12790407e599d76a1af5f163de19bff294f559e523dc706; amended hash 4a51ffb22f929107401b6620eaebe9cf6397a2b7966efcb5ec765701f6b6542c. No scope was deferred.
+Resolved by merge ca8568bb1e8dd7923dd15e8b7bbebc3b41c391b2 (PR #21) and installed release v18.18.5-orb.7. Evidence: tickets/evidence-antigravity-stream-byte-watchdog.txt and https://github.com/interpsys/oh-my-pi/releases/tag/v18.18.5-orb.7. Pinned before: 1 pass/5 fail; final affected controls: 338 pass/0 fail; TS/lint/format pass. Full Rust check was limited by missing Ninja and manually canceled after completed TS receipts; release-line PR had no configured CI checks. Installed Carbon default/OMP_NO_MCP=1 smokes returned WATCHDOG_OK/NO_MCP_OK. No running process restarted. Main-d63ad71f069c approved 120→300s defaults after observed146s TTFT, plus bounded/logged empty STOP and visible changed-prompt recovery. Original acceptance hash 2691fe4e214e62fbb12790407e599d76a1af5f163de19bff294f559e523dc706; amended hash 4a51ffb22f929107401b6620eaebe9cf6397a2b7966efcb5ec765701f6b6542c; no acceptance criterion silently dropped.
 
 ## Log
 
 - 2026-11-12T09:20:00Z filed AntigravityStreamStallFix-749006bb6bc0 omp:01a1cf06-a70b-72e2-94ef-749006bb6bc0 Issuer Main-d63ad71f069c; portable repro and byte watchdog implementation assigned.
 - Parent wire evidence: production and a fresh connection also hung; sandbox-only and fresh-connection-only explanations refuted. Three same-connection uploads fit initial+two identical-body empty retries, but the incident's actual ~4KB response frames remain unobserved (203 dump files, none in incident window).
 - Isolated substantive high-thinking copied-session baseline probe (2026-11-12T09:25:39Z..09:27:51Z) succeeded in one production request: first bytes21.897s, first answer108.420s, body96058bytes/98frames, end128.959s, exit0. Terminal signature-only STOP followed real thinking/text; no empty STOP reproduced. Evidence: /Users/compoooter/tmp/antigravity-watchdog-artifacts/carbon-wire.jsonl and carbon-run-receipt.json.
+- Native orb ticket close recorded DONE at resolving merge ca8568bb1e8dd7923dd15e8b7bbebc3b41c391b2 with release, test, installed SHA256 and live-smoke evidence.
