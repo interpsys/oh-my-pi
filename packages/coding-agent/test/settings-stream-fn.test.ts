@@ -1,22 +1,26 @@
 /**
  * Contract: `createSettingsAwareStreamFn` layers session provider settings
- * (`providers.openrouterVariant`, `providers.antigravityEndpoint`,
+ * (`providers.openrouterVariant`, `providers.antigravityEndpoint`, `providers.antigravityRequestParity`,
  * `providers.stream*TimeoutSeconds`, `providers.maxInFlightRequests`,
  * `model.loopGuard.*`, `textVerbosity` for Responses-family requests)
  * options win — the same wiring the main agent and the advisor agent share so
  * OpenRouter sticky-routing / response caching behaves the same on advisor turns
  * (can1357/oh-my-pi#3639).
  */
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import { type Context, type Model, type SimpleStreamOptions, streamSimple } from "@oh-my-pi/pi-ai";
 import { configureProviderStoreResponses } from "@oh-my-pi/pi-ai/providers/openai-responses-state";
+import { configureAntigravityRequestParity } from "@oh-my-pi/pi-ai/stream";
 import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { bindEffects } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { cfgProvidersMuseCodeStoreResponses } from "@oh-my-pi/pi-coding-agent/session/settings";
+import {
+	cfgProvidersAntigravityRequestParity,
+	cfgProvidersMuseCodeStoreResponses,
+} from "@oh-my-pi/pi-coding-agent/session/settings";
 import {
 	createSettingsAwareStreamFn,
 	resolveWebsocketPreference,
@@ -559,6 +563,76 @@ describe("createSettingsAwareStreamFn", () => {
 			} finally {
 				release();
 				configureProviderStoreResponses(undefined);
+			}
+		});
+	});
+
+	describe("providers.antigravityRequestParity (default off)", () => {
+		const antigravityGemini = getBundledModel("google-antigravity", "gemini-3.1-pro");
+		if (!antigravityGemini) throw new Error("Expected bundled google-antigravity Gemini model");
+		const context: Context = { messages: [{ role: "user", content: "hi", timestamp: 0 }] };
+		const textSse = `data: ${JSON.stringify({
+			response: {
+				candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+				usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+			},
+		})}\n\n`;
+		// Pinning the client version keeps the Antigravity manifest lookup off the injected fetch.
+		const savedAntigravityVersion = process.env.PI_AI_ANTIGRAVITY_VERSION;
+		beforeEach(() => {
+			process.env.PI_AI_ANTIGRAVITY_VERSION = "2.19.1";
+		});
+		afterEach(() => {
+			if (savedAntigravityVersion === undefined) delete process.env.PI_AI_ANTIGRAVITY_VERSION;
+			else process.env.PI_AI_ANTIGRAVITY_VERSION = savedAntigravityVersion;
+		});
+
+		/** Send one real Antigravity Gemini request via `send`; return the wire envelope's `requestType`. */
+		async function wireRequestType(send: (options: SimpleStreamOptions) => Promise<unknown>): Promise<unknown> {
+			const bodies: Array<Record<string, unknown>> = [];
+			const fetch = (async (_url: unknown, init?: RequestInit) => {
+				bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+				return new Response(textSse, { headers: { "content-type": "text/event-stream" } });
+			}) as FetchImpl;
+			await send({ apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }), fetch });
+			expect(bodies).toHaveLength(1);
+			return bodies[0]?.requestType;
+		}
+
+		/** A session turn: the settings-aware stream over the real `streamSimple`, with `caller` options on top. */
+		const viaSession =
+			(settings: Settings, caller: SimpleStreamOptions) =>
+			async (options: SimpleStreamOptions): Promise<unknown> => {
+				const stream = await createSettingsAwareStreamFn(settings)(antigravityGemini, context, {
+					...options,
+					...caller,
+				});
+				return stream.result();
+			};
+
+		const rows: Array<[string, "on" | undefined, boolean | undefined, string | undefined]> = [
+			["keeps the existing encoding by default", undefined, undefined, undefined],
+			["sends the official envelope when the setting is on", "on", undefined, "agent"],
+			["lets a caller's explicit false override the setting", "on", false, undefined],
+		];
+		it.each(rows)("%s", async (_label, setting, antigravityRequestParity, expected) => {
+			const settings = Settings.isolated(setting ? { "providers.antigravityRequestParity": setting } : {});
+			expect(await wireRequestType(viaSession(settings, { antigravityRequestParity }))).toBe(expected);
+		});
+
+		it("applies to direct side requests through the bound settings", async () => {
+			// Titles, commit messages, and memories call `completeSimple`/`streamSimple`
+			// without the settings-aware stream; the process-wide effect covers them.
+			const settings = Settings.isolated();
+			const release = bindEffects(settings);
+			const direct = (options: SimpleStreamOptions) => streamSimple(antigravityGemini, context, options).result();
+			try {
+				expect(await wireRequestType(direct)).toBeUndefined();
+				cfgProvidersAntigravityRequestParity.set(settings, "on");
+				expect(await wireRequestType(direct)).toBe("agent");
+			} finally {
+				release();
+				configureAntigravityRequestParity(false);
 			}
 		});
 	});

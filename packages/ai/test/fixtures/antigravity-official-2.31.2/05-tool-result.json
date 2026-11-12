@@ -1,0 +1,693 @@
+{
+	"project": "<project>",
+	"requestId": "agent/12d96429-72a9-4606-ae36-f25a0ecdecd6/1794507152787/0217a08f-2b71-446e-b582-ab6f9b51db45/5",
+	"request": {
+		"contents": [
+			{
+				"role": "user",
+				"parts": [
+					{
+						"text": "<USER_REQUEST>\nReply with exactly PLAIN_CAPTURE_OK. Do not use tools.\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-12T10:11:49-08:00.\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` from None to Gemini 4 Carbon (High). No need to comment on this change if the user doesn't ask about it. If reporting what model you are, please use a human readable name instead of the exact string.\n</USER_SETTINGS_CHANGE>"
+					}
+				]
+			},
+			{
+				"role": "model",
+				"parts": [
+					{
+						"text": "PLAIN_CAPTURE_OK",
+						"thoughtSignature": "SigPlainTurnText"
+					}
+				]
+			},
+			{
+				"role": "user",
+				"parts": [
+					{
+						"text": "<USER_REQUEST>\nUse your file-reading tool to read /workspace/conversation/wire-fixture.txt. Then reply with the exact single line from the file. Do not modify any files or run any commands.\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-12T10:12:25-08:00.\n</ADDITIONAL_METADATA>"
+					}
+				]
+			},
+			{
+				"role": "model",
+				"parts": [
+					{
+						"functionCall": {
+							"id": "call_5357696484820081180",
+							"name": "read_file",
+							"args": {
+								"Path": "/workspace/conversation/wire-fixture.txt"
+							}
+						},
+						"thoughtSignature": "SigReadFileCall1"
+					}
+				]
+			},
+			{
+				"role": "model",
+				"parts": [
+					{
+						"functionResponse": {
+							"id": "call_5357696484820081180",
+							"name": "read_file",
+							"response": {
+								"output": "Created At: 2026-11-12T10:12:32-08:00\nCompleted At: 2026-11-12T10:12:32-08:00\nShowing lines 1-1 of 1\n1: wire_capture_tool_result_4827"
+							}
+						}
+					}
+				]
+			}
+		],
+		"systemInstruction": {
+			"role": "user",
+			"parts": [
+				{
+					"text": "<official Antigravity 2.31.2 system prompt, 30112 chars>"
+				}
+			]
+		},
+		"tools": [
+			{
+				"functionDeclarations": [
+					{
+						"name": "read_file",
+						"description": "<read_file>",
+						"parameters": {
+							"type": "OBJECT",
+							"properties": {
+								"ByteOffset": {
+									"type": "INTEGER",
+									"description": "<read_file.ByteOffset>"
+								},
+								"EndLine": {
+									"type": "INTEGER",
+									"description": "<read_file.EndLine>"
+								},
+								"Path": {
+									"type": "STRING",
+									"description": "<read_file.Path>"
+								},
+								"StartLine": {
+									"type": "INTEGER",
+									"description": "<read_file.StartLine>"
+								}
+							},
+							"required": [
+								"Path"
+							]
+						}
+					}
+				]
+			},
+			{
+				"functionDeclarations": [
+					{
+						"name": "run_command",
+						"description": "<run_command>",
+						"parameters": {
+							"type": "OBJECT",
+							"properties": {
+								"BypassSandbox": {
+									"type": "BOOLEAN",
+									"description": "<run_command.BypassSandbox>"
+								},
+								"CommandLine": {
+									"type": "STRING",
+									"description": "<run_command.CommandLine>"
+								},
+								"IsDaemon": {
+									"type": "BOOLEAN",
+									"description": "<run_command.IsDaemon>"
+								},
+								"WaitMsBeforeAsync": {
+									"type": "INTEGER",
+									"description": "<run_command.WaitMsBeforeAsync>"
+								},
+								"toolSummary": {
+									"type": "STRING",
+									"description": "<run_command.toolSummary>"
+								}
+							},
+							"required": [
+								"CommandLine",
+								"toolSummary",
+								"WaitMsBeforeAsync"
+							]
+						}
+					}
+				]
+			},
+			{
+				"functionDeclarations": [
+					{
+						"name": "list_plugin_accounts",
+						"description": "<list_plugin_accounts>",
+						"parameters": {
+							"type": "OBJECT"
+						}
+					}
+				]
+			},
+			{
+				"functionDeclarations": [
+					{
+						"name": "manage_task",
+						"description": "<manage_task>",
+						"parameters": {
+							"type": "OBJECT",
+							"properties": {
+								"Action": {
+									"type": "STRING",
+									"description": "<manage_task.Action>",
+									"enum": [
+										"list",
+										"kill",
+										"status",
+										"send_input"
+									]
+								},
+								"Input": {
+									"type": "STRING",
+									"description": "<manage_task.Input>"
+								},
+								"TaskId": {
+									"type": "STRING",
+									"description": "<manage_task.TaskId>"
+								}
+							},
+							"required": [
+								"Action"
+							]
+						}
+					}
+				]
+			},
+			{
+				"functionDeclarations": [
+					{
+						"name": "send_message",
+						"description": "<send_message>",
+						"parameters": {
+							"type": "OBJECT",
+							"properties": {
+								"Message": {
+									"type": "STRING",
+									"description": "<send_message.Message>",
+									"minLength": "1"
+								},
+								"Recipient": {
+									"type": "STRING",
+									"description": "<send_message.Recipient>",
+									"minLength": "1"
+								}
+							},
+							"required": [
+								"Recipient",
+								"Message"
+							]
+						}
+					}
+				]
+			},
+			{
+				"functionDeclarations": [
+					{
+						"name": "schedule",
+						"description": "<schedule>",
+						"parameters": {
+							"type": "OBJECT",
+							"properties": {
+								"CronExpression": {
+									"type": "STRING",
+									"description": "<schedule.CronExpression>"
+								},
+								"DurationSeconds": {
+									"type": "INTEGER",
+									"description": "<schedule.DurationSeconds>"
+								},
+								"ExactTiming": {
+									"type": "BOOLEAN",
+									"description": "<schedule.ExactTiming>"
+								},
+								"IsDaemon": {
+									"type": "BOOLEAN",
+									"description": "<schedule.IsDaemon>"
+								},
+								"MaxIterations": {
+									"type": "INTEGER",
+									"description": "<schedule.MaxIterations>"
+								},
+								"Prompt": {
+									"type": "STRING",
+									"description": "<schedule.Prompt>"
+								},
+								"TimerCondition": {
+									"type": "STRING",
+									"description": "<schedule.TimerCondition>"
+								}
+							},
+							"required": [
+								"Prompt"
+							]
+						}
+					}
+				]
+			},
+			{
+				"functionDeclarations": [
+					{
+						"name": "invoke_subagent",
+						"description": "<invoke_subagent>",
+						"parameters": {
+							"type": "OBJECT",
+							"properties": {
+								"Model": {
+									"type": "STRING",
+									"description": "<invoke_subagent.Model>",
+									"enum": [
+										"inherit",
+										"flash_lite",
+										"flash",
+										"pro"
+									]
+								},
+								"Prompt": {
+									"type": "STRING",
+									"description": "<invoke_subagent.Prompt>"
+								},
+								"Role": {
+									"type": "STRING",
+									"description": "<invoke_subagent.Role>"
+								},
+								"TypeName": {
+									"type": "STRING",
+									"description": "<invoke_subagent.TypeName>"
+								},
+								"Workspace": {
+									"type": "STRING",
+									"description": "<invoke_subagent.Workspace>"
+								}
+							},
+							"required": [
+								"TypeName",
+								"Role",
+								"Prompt"
+							]
+						}
+					}
+				]
+			},
+			{
+				"functionDeclarations": [
+					{
+						"name": "define_subagent",
+						"description": "<define_subagent>",
+						"parameters": {
+							"type": "OBJECT",
+							"properties": {
+								"Description": {
+									"type": "STRING",
+									"description": "<define_subagent.Description>",
+									"minLength": "1"
+								},
+								"EnableMCPTools": {
+									"type": "BOOLEAN",
+									"description": "<define_subagent.EnableMCPTools>"
+								},
+								"EnableSubagentTools": {
+									"type": "BOOLEAN",
+									"description": "<define_subagent.EnableSubagentTools>"
+								},
+								"EnableWriteTools": {
+									"type": "BOOLEAN",
+									"description": "<define_subagent.EnableWriteTools>"
+								},
+								"Name": {
+									"type": "STRING",
+									"description": "<define_subagent.Name>",
+									"minLength": "1"
+								},
+								"SystemPrompt": {
+									"type": "STRING",
+									"description": "<define_subagent.SystemPrompt>",
+									"minLength": "1"
+								}
+							},
+							"required": [
+								"Name",
+								"Description",
+								"SystemPrompt"
+							]
+						}
+					}
+				]
+			},
+			{
+				"functionDeclarations": [
+					{
+						"name": "manage_subagents",
+						"description": "<manage_subagents>",
+						"parameters": {
+							"type": "OBJECT",
+							"properties": {
+								"Action": {
+									"type": "STRING",
+									"description": "<manage_subagents.Action>",
+									"enum": [
+										"list",
+										"kill",
+										"kill_all"
+									]
+								},
+								"ConversationIds": {
+									"type": "ARRAY",
+									"description": "<manage_subagents.ConversationIds>",
+									"items": {
+										"type": "STRING"
+									}
+								}
+							},
+							"required": [
+								"Action"
+							]
+						}
+					}
+				]
+			},
+			{
+				"functionDeclarations": [
+					{
+						"name": "write_file",
+						"description": "<write_file>",
+						"parameters": {
+							"type": "OBJECT",
+							"properties": {
+								"Append": {
+									"type": "BOOLEAN",
+									"description": "<write_file.Append>"
+								},
+								"ArtifactMetadata": {
+									"type": "OBJECT",
+									"description": "<write_file.ArtifactMetadata>",
+									"properties": {
+										"RequestFeedback": {
+											"type": "BOOLEAN",
+											"description": "<write_file.ArtifactMetadata.RequestFeedback>"
+										},
+										"Summary": {
+											"type": "STRING",
+											"description": "<write_file.ArtifactMetadata.Summary>"
+										},
+										"UserFacing": {
+											"type": "BOOLEAN",
+											"description": "<write_file.ArtifactMetadata.UserFacing>"
+										}
+									},
+									"required": [
+										"Summary",
+										"UserFacing",
+										"RequestFeedback"
+									]
+								},
+								"Content": {
+									"type": "STRING",
+									"description": "<write_file.Content>"
+								},
+								"Overwrite": {
+									"type": "BOOLEAN",
+									"description": "<write_file.Overwrite>"
+								},
+								"Path": {
+									"type": "STRING",
+									"description": "<write_file.Path>",
+									"minLength": "1"
+								}
+							},
+							"required": [
+								"Path",
+								"Content"
+							]
+						}
+					}
+				]
+			},
+			{
+				"functionDeclarations": [
+					{
+						"name": "edit_file",
+						"description": "<edit_file>",
+						"parameters": {
+							"type": "OBJECT",
+							"properties": {
+								"ArtifactMetadata": {
+									"type": "OBJECT",
+									"description": "<edit_file.ArtifactMetadata>",
+									"properties": {
+										"RequestFeedback": {
+											"type": "BOOLEAN",
+											"description": "<edit_file.ArtifactMetadata.RequestFeedback>"
+										},
+										"Summary": {
+											"type": "STRING",
+											"description": "<edit_file.ArtifactMetadata.Summary>"
+										},
+										"UserFacing": {
+											"type": "BOOLEAN",
+											"description": "<edit_file.ArtifactMetadata.UserFacing>"
+										}
+									},
+									"required": [
+										"Summary",
+										"UserFacing",
+										"RequestFeedback"
+									]
+								},
+								"Path": {
+									"type": "STRING",
+									"description": "<edit_file.Path>",
+									"minLength": "1"
+								},
+								"Replacement": {
+									"type": "STRING",
+									"description": "<edit_file.Replacement>"
+								},
+								"Target": {
+									"type": "STRING",
+									"description": "<edit_file.Target>",
+									"minLength": "1"
+								}
+							},
+							"required": [
+								"Path",
+								"Target",
+								"Replacement"
+							]
+						}
+					}
+				]
+			},
+			{
+				"functionDeclarations": [
+					{
+						"name": "search_web",
+						"description": "<search_web>",
+						"parameters": {
+							"type": "OBJECT",
+							"properties": {
+								"domain": {
+									"type": "STRING",
+									"description": "<search_web.domain>"
+								},
+								"query": {
+									"type": "STRING"
+								}
+							},
+							"required": [
+								"query"
+							]
+						}
+					}
+				]
+			},
+			{
+				"functionDeclarations": [
+					{
+						"name": "search_marketplace",
+						"description": "<search_marketplace>",
+						"parameters": {
+							"type": "OBJECT",
+							"properties": {
+								"kind": {
+									"type": "STRING",
+									"description": "<search_marketplace.kind>",
+									"enum": [
+										"plugin",
+										"skill",
+										"all"
+									]
+								},
+								"limit": {
+									"type": "INTEGER",
+									"description": "<search_marketplace.limit>"
+								},
+								"queries": {
+									"type": "ARRAY",
+									"description": "<search_marketplace.queries>",
+									"items": {
+										"type": "STRING"
+									},
+									"minItems": "1"
+								}
+							},
+							"required": [
+								"queries"
+							]
+						}
+					}
+				]
+			},
+			{
+				"functionDeclarations": [
+					{
+						"name": "swarm",
+						"description": "<swarm>",
+						"parameters": {
+							"type": "OBJECT",
+							"properties": {
+								"action": {
+									"type": "STRING",
+									"description": "<swarm.action>",
+									"enum": [
+										"status",
+										"models",
+										"add",
+										"model",
+										"kill",
+										"title"
+									]
+								},
+								"all": {
+									"type": "BOOLEAN",
+									"description": "<swarm.all>"
+								},
+								"brief": {
+									"type": "STRING",
+									"description": "<swarm.brief>"
+								},
+								"fork": {
+									"type": "STRING",
+									"description": "<swarm.fork>"
+								},
+								"model": {
+									"type": "STRING",
+									"description": "<swarm.model>"
+								},
+								"n": {
+									"type": "INTEGER",
+									"description": "<swarm.n>",
+									"minimum": 1
+								},
+								"name": {
+									"type": "STRING",
+									"description": "<swarm.name>"
+								},
+								"tasks": {
+									"type": "ARRAY",
+									"description": "<swarm.tasks>",
+									"items": {
+										"type": "STRING"
+									}
+								},
+								"title": {
+									"type": "STRING",
+									"description": "<swarm.title>"
+								},
+								"workspace": {
+									"type": "STRING",
+									"description": "<swarm.workspace>",
+									"enum": [
+										"inherit",
+										"share",
+										"branch"
+									]
+								}
+							},
+							"required": [
+								"action"
+							]
+						}
+					}
+				]
+			},
+			{
+				"functionDeclarations": [
+					{
+						"name": "ask_question",
+						"description": "<ask_question>",
+						"parameters": {
+							"type": "OBJECT",
+							"properties": {
+								"questions": {
+									"type": "ARRAY",
+									"items": {
+										"type": "OBJECT",
+										"properties": {
+											"is_multi_select": {
+												"type": "BOOLEAN",
+												"description": "<ask_question.questions[].is_multi_select>"
+											},
+											"options": {
+												"type": "ARRAY",
+												"description": "<ask_question.questions[].options>",
+												"items": {
+													"type": "STRING"
+												},
+												"minItems": "2"
+											},
+											"question": {
+												"type": "STRING",
+												"description": "<ask_question.questions[].question>",
+												"minLength": "1"
+											}
+										},
+										"required": [
+											"question",
+											"options"
+										]
+									},
+									"minItems": "1"
+								}
+							},
+							"required": [
+								"questions"
+							]
+						}
+					}
+				]
+			}
+		],
+		"labels": {
+			"cascade_id": "12d96429-72a9-4606-ae36-f25a0ecdecd6",
+			"last_execution_id": "9976f643-e0d1-434b-b087-6a79c1f0106d",
+			"last_step_index": "4",
+			"model_enum": "MODEL_PLACEHOLDER_M427",
+			"request_id": "0217a08f-2b71-446e-b582-ab6f9b51db45-2",
+			"root_cascade_id": "12d96429-72a9-4606-ae36-f25a0ecdecd6",
+			"trajectory_id": "0217a08f-2b71-446e-b582-ab6f9b51db45",
+			"used_claude": "false",
+			"used_claude_conservative": "false",
+			"used_non_gemini_model": "false"
+		},
+		"generationConfig": {
+			"maxOutputTokens": 262144,
+			"thinkingConfig": {
+				"includeThoughts": true,
+				"thinkingLevel": "HIGH"
+			}
+		},
+		"sessionId": "-3750763034362895579"
+	},
+	"model": "gemini-4-carbon-high",
+	"userAgent": "antigravity",
+	"requestType": "agent"
+}

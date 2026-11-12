@@ -91,6 +91,23 @@ export const LIFTABLE_TO_DESCRIPTION_FIELDS: Record<string, true> = {
 };
 
 /**
+ * Bounds Google's `Schema` proto carries as typed fields. The official
+ * Antigravity Gemini encoding keeps them on the wire instead of spilling them
+ * into `description`; `int64` bounds serialize as decimal strings in proto
+ * JSON, `double` bounds stay numbers.
+ */
+export const GOOGLE_SCHEMA_PROTO_BOUND_FIELDS: Record<string, "int64" | "double"> = {
+	minLength: "int64",
+	maxLength: "int64",
+	minItems: "int64",
+	maxItems: "int64",
+	minProperties: "int64",
+	maxProperties: "int64",
+	minimum: "double",
+	maximum: "double",
+};
+
+/**
  * Non-structural schema keys stripped during OpenAI strict mode sanitization.
  * These are decorative/validation-only keywords that don't affect the structural
  * shape OpenAI's strict mode enforces.

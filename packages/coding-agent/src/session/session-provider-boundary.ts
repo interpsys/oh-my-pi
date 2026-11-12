@@ -30,6 +30,7 @@ import {
 	cfgModelLoopGuardCheckAssistantContent,
 	cfgModelLoopGuardEnabled,
 	cfgProvidersAntigravityEndpoint,
+	cfgProvidersAntigravityRequestParity,
 	cfgProvidersMaxInFlightRequests,
 	cfgProvidersOpenrouterVariant,
 	validateProviderMaxInFlightRequests,
@@ -239,11 +240,17 @@ export class SessionProviderBoundary {
 				: undefined;
 		const antigravityEndpointMode =
 			provider === "google-antigravity" ? cfgProvidersAntigravityEndpoint.get(this.#host.settings) : undefined;
+		const antigravityRequestParity =
+			provider === "google-antigravity"
+				? (options.antigravityRequestParity ??
+					cfgProvidersAntigravityRequestParity.get(this.#host.settings) === "on")
+				: undefined;
 
 		const preparedOptions: SimpleStreamOptions = {
 			...options,
 			...(openrouterVariant !== undefined && { openrouterVariant }),
 			...(antigravityEndpointMode !== undefined && { antigravityEndpointMode }),
+			...(antigravityRequestParity !== undefined && { antigravityRequestParity }),
 			maxInFlightRequests: validateProviderMaxInFlightRequests(
 				options.maxInFlightRequests ?? cfgProvidersMaxInFlightRequests.get(this.#host.settings),
 			),

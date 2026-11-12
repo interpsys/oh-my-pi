@@ -213,6 +213,14 @@ export interface ConvertMessagesOptions {
 	 * previous model step are function responses alone.
 	 */
 	unsignedTurnOpeningSteps?: boolean;
+	/**
+	 * Encode history like the official Antigravity 2.31.2 client: the model's
+	 * own unsigned thinking is not replayed (signed parts keep their slot),
+	 * function calls and responses carry their part ids, and each function
+	 * response is its own `model`-role content, in call order, instead of one
+	 * merged user turn. Signatures follow the normal replay policy.
+	 */
+	antigravityRequestParity?: boolean;
 }
 
 /** Whether the user contents after the last model step hold anything but function responses. */
@@ -238,6 +246,8 @@ export function convertMessages<T extends GoogleApiType>(
 	const contents: Content[] = [];
 	const emittedToolCallNames = new Map<string, string>();
 	const callOrder = new FunctionCallOrder();
+	const parity = options.antigravityRequestParity === true;
+	const includeFunctionPartIds = model.compat.supportsFunctionPartId || parity;
 
 	const transformedMessages = transformMessages(context.messages, model, id => normalizeToolCallId(id));
 
@@ -246,7 +256,14 @@ export function convertMessages<T extends GoogleApiType>(
 	// equal to number of function call parts"). Buffer image turns and flush them only after the
 	// merged functionResponse turn is complete, each result's images in its call's order.
 	let pendingToolImages: Array<{ ordinal: number | undefined; parts: Part[] }> = [];
-	const flushPendingToolImages = () => {
+	// Parity: each function response is its own content; the run is pushed in call order.
+	let pendingResponseContents: Array<{ ordinal: number | undefined; content: Content }> = [];
+	const flushToolResults = () => {
+		if (pendingResponseContents.length > 0) {
+			sortKnownInPlace(pendingResponseContents, response => response.ordinal);
+			for (const response of pendingResponseContents) contents.push(response.content);
+			pendingResponseContents = [];
+		}
 		if (pendingToolImages.length === 0) return;
 		sortKnownInPlace(pendingToolImages, group => group.ordinal);
 		contents.push({ role: "user", parts: pendingToolImages.flatMap(group => group.parts) });
@@ -254,7 +271,7 @@ export function convertMessages<T extends GoogleApiType>(
 	};
 
 	for (const msg of transformedMessages) {
-		if (msg.role !== "toolResult") flushPendingToolImages();
+		if (msg.role !== "toolResult") flushToolResults();
 		if (msg.role === "user" || msg.role === "developer") {
 			if (typeof msg.content === "string") {
 				// Skip empty user messages
@@ -310,6 +327,8 @@ export function convertMessages<T extends GoogleApiType>(
 					// Skip empty thinking unless it carries the signature of a signature-only thought part
 					if ((!block.thinking || block.thinking.trim() === "") && !thoughtSignature) continue;
 					if (dropsUnsignedThinking && !thoughtSignature) continue;
+					// The official Antigravity client omits the thought summaries it streamed.
+					if (parity && isSameProviderAndModel && !thoughtSignature) continue;
 					if (isSameProviderAndModel) {
 						// The model's own thinking replays in the thought slot even unsigned: Gemini
 						// signs the part after a thought summary, not the summary, and replayed as
@@ -346,7 +365,7 @@ export function convertMessages<T extends GoogleApiType>(
 						functionCall: {
 							name: block.name,
 							args: block.arguments ?? {},
-							...(model.compat.supportsFunctionPartId ? { id: block.id } : {}),
+							...(includeFunctionPartIds ? { id: block.id } : {}),
 						},
 					};
 					if (effectiveSignature) {
@@ -388,28 +407,35 @@ export function convertMessages<T extends GoogleApiType>(
 
 			const imageParts = imageContent.map(convertGoogleImagePart);
 
-			const includeId = model.compat.supportsFunctionPartId;
 			const emittedName = emittedToolCallNames.get(msg.toolCallId);
 			const functionResponsePart: Part = {
 				functionResponse: {
 					name: emittedName ?? msg.toolName,
 					response: msg.isError ? { error: responseValue } : { output: responseValue },
 					...(hasImages && modelSupportsMultimodalFunctionResponse && { parts: imageParts }),
-					...(includeId ? { id: msg.toolCallId } : {}),
+					...(includeFunctionPartIds ? { id: msg.toolCallId } : {}),
 				},
 			};
-			callOrder.response(functionResponsePart, msg.toolCallId);
 
-			// Cloud Code Assist API requires all function responses to be in a single user turn.
-			// Check if the last content is already a user turn with function responses and merge.
-			const lastContent = contents[contents.length - 1];
-			if (lastContent?.role === "user" && lastContent.parts?.some(p => p.functionResponse)) {
-				lastContent.parts.push(functionResponsePart);
-			} else {
-				contents.push({
-					role: "user",
-					parts: [functionResponsePart],
+			if (parity) {
+				// The official Antigravity client sends each response as its own model-role content.
+				pendingResponseContents.push({
+					ordinal: callOrder.ordinal(msg.toolCallId),
+					content: { role: "model", parts: [functionResponsePart] },
 				});
+			} else {
+				callOrder.response(functionResponsePart, msg.toolCallId);
+				// Cloud Code Assist API requires all function responses to be in a single user turn.
+				// Check if the last content is already a user turn with function responses and merge.
+				const lastContent = contents[contents.length - 1];
+				if (lastContent?.role === "user" && lastContent.parts?.some(p => p.functionResponse)) {
+					lastContent.parts.push(functionResponsePart);
+				} else {
+					contents.push({
+						role: "user",
+						parts: [functionResponsePart],
+					});
+				}
 			}
 
 			// For Gemini < 3, buffer images for a separate user message after the functionResponse turn
@@ -421,7 +447,7 @@ export function convertMessages<T extends GoogleApiType>(
 			}
 		}
 	}
-	flushPendingToolImages();
+	flushToolResults();
 	callOrder.apply(contents);
 
 	return contents;

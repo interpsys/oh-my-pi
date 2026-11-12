@@ -1021,6 +1021,20 @@ describe("AgentSession message pipeline", () => {
 		await expect(prepared.onPayload?.({ original: true })).rejects.toThrow("cancelled by payload hook");
 		expect(requestOnPayload).not.toHaveBeenCalled();
 	});
+
+	it("gives Antigravity side requests the session's request-parity setting unless the caller set it", () => {
+		const session = new AgentSession({
+			agent: createAgent(),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false, "providers.antigravityRequestParity": "on" }),
+			modelRegistry: {} as never,
+		});
+		sessions.push(session);
+
+		expect(session.prepareSimpleStreamOptions({}, "google-antigravity").antigravityRequestParity).toBe(true);
+		const callerOff = session.prepareSimpleStreamOptions({ antigravityRequestParity: false }, "google-antigravity");
+		expect(callerOff.antigravityRequestParity).toBe(false);
+	});
 	it("lets an extension stream a context-aware side turn without persisting its exchange", async () => {
 		const api = "test-ephemeral-side-channel";
 		let capturedOptions: SimpleStreamOptions | undefined;
