@@ -88,3 +88,33 @@ Received: "Request was aborted"
  5 fail
  21 expect() calls
 Ran 6 tests across 1 file. [7.51s]
+
+AFTER / LOCAL CONTROLS (matching native package version 18.18.5; Bun 1.4.4)
+
+bun test packages/ai/test/google-gemini-cli-byte-watchdog.test.ts packages/ai/test/google-gemini-cli-first-event-timeout.test.ts packages/ai/test/google-empty-response-retry.test.ts packages/utils/test/stream.test.ts
+87 pass, 0 fail, 361 assertions; real TCP acceptance-without-response,
+headers-without-body, fresh connections, alternate endpoint, single endpoint,
+partial SSE/comment/thinking bytes, continuous traffic and caller abort controls.
+
+bun test packages/coding-agent/test/agent-session-retry-fallback.test.ts packages/coding-agent/test/agent-session-empty-stop-guard.test.ts packages/coding-agent/test/settings-stream-fn.test.ts packages/coding-agent/test/build-info.test.ts
+236 pass, 0 fail, 1049 assertions, 6.00 s.
+Includes real fake-server same-model continuation: server emits empty STOP until
+the developer reminder changes the request body. Two unchanged endpoint requests
+then one changed-body request succeed; visible retry start/end events are paired.
+Existing generic retry caps, cancellation and empty-stop guards also pass.
+
+LIVE RAW-CAPTURE CONTROL (baseline installed binary; no existing process restarted)
+
+Isolated copy of session 01a1ced1, substantive instruction, thinking high:
+2026-11-12T09:25:39.154Z to 09:27:51.629Z; exit 0, one production request.
+Request body 1,239,024 bytes; HTTP 200; first body byte 21.897 s;
+first answer text 108.420 s; end 128.959 s; 96,058 response bytes, 103 chunks,
+98 SSE frames. Frame 1 included 297 thought bytes. Terminal frame 98 included
+a 44,156-byte thought signature and empty text with STOP, AFTER real output.
+This successful capture does NOT confirm incident replies were empty STOP.
+No failing 4 KB response payload was captured; sandbox-only and fresh-connection-
+alone hypotheses are refuted by the parent's production/fresh-connection wire
+observations, not by this successful control.
+Local artifacts: /Users/compoooter/tmp/antigravity-watchdog-artifacts/
+carbon-run-receipt.json, carbon-wire.jsonl, carbon-stdout.txt, carbon-stderr.txt.
+The original session and running omp processes were not modified or restarted.

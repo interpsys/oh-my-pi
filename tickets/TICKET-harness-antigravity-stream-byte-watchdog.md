@@ -2,7 +2,7 @@
 
 Schema-Version: 2
 Kind: defect
-Status: OPEN
+Status: IN_PROGRESS
 Lane: harness
 Repo: https://github.com/interpsys/oh-my-pi
 Owner: AntigravityStreamStallFix-749006bb6bc0@chat
@@ -12,12 +12,12 @@ Pinned: 2661f95e04cb84038e9183bd3ba02b176fbf88d8
 Source: finding
 Files: packages/ai/src/providers/google-gemini-cli.ts, packages/ai/src/providers/register-builtins.ts, packages/ai/src/utils/stream-byte-watchdog.ts, packages/utils/src/stream.ts, packages/ai/test/google-gemini-cli-byte-watchdog.test.ts, packages/ai/test/google-gemini-cli-first-event-timeout.test.ts, packages/ai/test/google-empty-response-retry.test.ts, packages/coding-agent/src/session/turn-recovery.ts, packages/coding-agent/test/agent-session-retry-fallback.test.ts, packages/coding-agent/src/build-info.ts, packages/coding-agent/test/build-info.test.ts, docs/provider-quirks.md, docs/non-compaction-retry-policy.md, packages/ai/CHANGELOG.md, packages/coding-agent/CHANGELOG.md, packages/coding-agent/src/session/settings.ts
 Dedup-Key: omp-antigravity-silent-stream-byte-watchdog
-Acceptance-SHA256: 2691fe4e214e62fbb12790407e599d76a1af5f163de19bff294f559e523dc706
+Acceptance-SHA256: 4a51ffb22f929107401b6620eaebe9cf6397a2b7966efcb5ec765701f6b6542c
 Blast-Radius: google-gemini-cli and google-antigravity streaming requests, coding-agent timeout settings, installed Darwin arm64 omp
 
 ## Symptom & Impact
 
-At 2026-11-12T09:05Z a live Gemini request uploaded 1,121,066 bytes to the sandbox endpoint and received only 1,322 bytes before minutes of silence. User-observed Escape plus resend usually recovers in approximately 10 seconds; retry reused the same pooled connection and hung. Same-process subagents on production continued streaming. Ledger: /Users/compoooter/tmp/heartbeat-top-pane/THESES.md; runtime log ~/.omp/logs/omp.2026-11-12.76446.log. This is one captured hung request; broader incidence denominator is unavailable. Expected: after 120 seconds without response-body bytes (initially or midstream), abort with retryable error and retry on a fresh connection, preferring alternate endpoint when safe before output.
+Observed: a fully uploaded Gemini/Antigravity request can produce no surfaced output until Escape; separate raw replies and same-body resends have not been captured during a failing live turn. Expected: raw response-byte silence is bounded by configurable first-byte and idle deadlines (defaults 300 s; parent-approved after observing legitimate 146 s TTFT), aborts the active transport, and retries with a fresh connection, preferring the alternate endpoint. Empty output must surface after bounded unchanged-body retries, then enter visible capped same-model continuation. Thinking, comments and partial SSE frames count as traffic.
 
 ## Reproduction & Controls
 
@@ -44,10 +44,11 @@ PR #14 (8689c546499acbf27978b7a33dc86c2d96057dd7, based on orb/v18.16.0) fixed e
 ## Acceptance
 
 1. Real local fake-server tests prove headerless timeout, body silence, automatic alternate-endpoint retry on fresh connection, single-endpoint retry, bounded idle after thinking, slow continuous bytes, and caller cancellation.
-2. Existing settings providers.streamFirstEventTimeoutSeconds and providers.streamIdleTimeoutSeconds retain override/disable behavior; provider defaults both 120 seconds. Every timeout logs endpoint and elapsed gap.
+2. Existing settings providers.streamFirstEventTimeoutSeconds and providers.streamIdleTimeoutSeconds retain override/disable behavior; provider defaults both 300 seconds (Main explicitly superseded the original 120-second requirement after observing legitimate 146-second TTFT). Every timeout logs endpoint and elapsed gap.
 3. Changed-file lint/format and typechecks run; repository CI receipt or concrete limitation recorded.
 4. Merge to orb/v18.18.5 and release v18.18.5-orb.7 (or documented existing manual-build pattern); install with rollback binary/manifest and exact SHA256 in manager.json. Verify installed --version and checksum.
 5. Live installed-binary short prompt google-antigravity/gemini-4-carbon works. Do not restart running omp processes; return restart command to parent.
+6. Empty STOP retries send at most one unchanged request per endpoint, then surface error into bounded same-model continuation that changes the prompt. Fake-server test returns empty STOP until the continuation changes the body; recovery succeeds without manual resend. Every resend logs reason, endpoint, attempt, elapsed time, response bytes and finish reason where available; session continuations emit visible retry events.
 
 ```sh
 bun test packages/ai/test/google-gemini-cli-byte-watchdog.test.ts packages/ai/test/google-gemini-cli-first-event-timeout.test.ts packages/ai/test/google-empty-response-retry.test.ts
