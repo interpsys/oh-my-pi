@@ -24,7 +24,7 @@ import { DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS, MAX_WEB_SEARCH_TIMEOUT_SECONDS } fr
 import { DEFAULT_USAGE_RESERVE_PCT } from "@oh-my-pi/pi-ai/auth-storage";
 import { configureProviderStoreResponses } from "@oh-my-pi/pi-ai/providers/openai-responses-state";
 import { configureCodexAccessPrograms } from "@oh-my-pi/pi-ai/providers/openai-codex/access-programs";
-import { configureProviderMaxInFlightRequests } from "@oh-my-pi/pi-ai/stream";
+import { configureAntigravityRequestParity, configureProviderMaxInFlightRequests } from "@oh-my-pi/pi-ai/stream";
 import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
 import { AUTO_THINKING, getConfiguredThinkingLevelMetadata, getThinkingLevelMetadata } from "@oh-my-pi/pi-tui/thinking";
@@ -1025,6 +1025,35 @@ export const cfgProvidersAntigravityEndpoint = register({
 		],
 	},
 });
+
+export const cfgProvidersAntigravityRequestParity = register({
+	id: "providers.antigravityRequestParity",
+	type: "enum",
+	values: ["on", "off"] as const,
+	default: "off",
+	ui: {
+		tab: "providers",
+		group: "Services",
+		label: "Antigravity Official Request Encoding",
+		description:
+			"Encode google-antigravity Gemini requests like the official Antigravity client. Off by default until a live comparison shows the official shape is no worse",
+		options: [
+			{
+				value: "off",
+				label: "Off",
+				description: "Existing encoding: unsigned turn-opening steps, user-role tool results, toolConfig",
+			},
+			{
+				value: "on",
+				label: "On",
+				description: "Official shape: real signatures, tool-call ids, model-role tool results, requestType agent",
+			},
+		],
+	},
+});
+// Sessions pass their own value per request; this process-wide default covers
+// callers without a session stream function (titles, commit messages, memories).
+effect(cfgProvidersAntigravityRequestParity, value => configureAntigravityRequestParity(value === "on"));
 
 export const cfgProvidersFireworksTier = register({
 	id: "providers.fireworksTier",

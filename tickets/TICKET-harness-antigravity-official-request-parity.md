@@ -12,7 +12,7 @@ Pinned: ca8568bb1e8dd7923dd15e8b7bbebc3b41c391b2
 Source: finding:/Users/compoooter/tmp/workers/wire-capture-official/RESULT.md
 Files: packages/ai/src/providers/google-gemini-cli.ts, packages/ai/src/providers/google-shared.ts, packages/ai/src/types.ts, packages/ai/test/, packages/coding-agent/src/config/, packages/coding-agent/src/, packages/coding-agent/test/, packages/ai/CHANGELOG.md, packages/coding-agent/CHANGELOG.md, docs/, tickets/
 Dedup-Key: antigravity-official-request-parity-2312
-Acceptance-SHA256: 36c013413d1fbc5ba4439b6193122b5325f064d01161280f2464e06a1c806d26
+Acceptance-SHA256: f6dca86d94f3896eadb6c00f1a450de8c68fa1aa0e267cbd704ea3050468581c
 Disjoint-Paths: provider encoding and related provider option/setting plumbing and tests
 Contract-Ref: /Users/compoooter/tmp/workers/wire-capture-official/RESULT.md
 Why-No-Repro: This adds an opt-in alternate wire contract; current signature suppression was an intentional workaround, not a violated existing official-parity invariant. Empty and generic 400 failures are stochastic even on identical bodies; the paired experiment tests improvement rather than claiming a deterministic cure.
@@ -55,6 +55,8 @@ bun check
 
 Run the frozen real-state A/B, retain per-request sanitized ledger and per-state/arm table with Wilson CIs, decision and manifest reconciliation. Ship merged release v18.18.5-orb.8, record tag/commit, installed binary SHA256, rollback path, settings behavior, live smoke and exact restart command without executing it. Close native ticket with exact pushed resolving SHA and evidence.
 
+Hydrogen scope addition (issuer instruction 2026-11-12T18:53Z): the same parity path must apply to Antigravity Gemini4 Hydrogen. Add Hydrogen-high on D-EMPTY-EARLY and one400 state,20 trials per arm/state (80 additional; planned combined280+controls, still<=400), report separately from Carbon. Preserve true historical model attribution: Carbon signatures are not relabeled as Hydrogen signatures. Unit tests prove continuity on actual same-model Hydrogen histories, and live controls exercise a fresh Hydrogen tool/signature continuation.
+
 ## Provenance
 
 Intentional signature suppression: original 224b48fd1d, fork PR #5 merge 36dcda4ee876, later cherry-pick aafe69dabe; ArgonInvalidArgFix-902bb8d64061 session 01a1a501-647f-7118-8111-902bb8d64061 reported nine transformed-dump HTTP200 outcomes and explicitly had not tested a patched serializer. Source: fork-history/RESULT.md lines 51–52 and replay-400-mutations/RESULT.md lines 79–82. No deterministic Carbon causal claim follows. Full introducing SHAs beyond cited pinned evidence are unobserved in this feature filing.
@@ -68,3 +70,5 @@ Pending implementation, A/B and deployment; no resolving commit yet.
 ## Log
 
 - 2026-11-12T18:38:00Z filed CarbonOfficialParity-81556c038d06 01a1d10a-9862-762d-8565-81556c038d06 official encoding feature and bounded comparison.
+- 2026-11-12T18:53:00Z scope_change Main-d63ad71f069c omp:01a1cec4-6aa4-7447-a546-d63ad71f069c adds Hydrogen parity and80 live comparison trials; original Carbon scope retained, no deferred requirements.
+- Scope-Change: old_sha256=36c013413d1fbc5ba4439b6193122b5325f064d01161280f2464e06a1c806d26; new_sha256=f6dca86d94f3896eadb6c00f1a450de8c68fa1aa0e267cbd704ea3050468581c; owner=Main-d63ad71f069c (omp:01a1cec4-6aa4-7447-a546-d63ad71f069c); reason=user Hydrogen coverage addition before first experiment; Dropped-Scope-Ticket: none.

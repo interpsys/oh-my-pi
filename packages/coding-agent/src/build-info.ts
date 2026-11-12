@@ -7,7 +7,7 @@ declare const __OMP_BUILD_COMMIT__: string | undefined;
 export const BUILD_INFO: Readonly<{ version: string; commit: string | null; variant: string }> = Object.freeze({
 	version: VERSION,
 	commit: typeof __OMP_BUILD_COMMIT__ === "undefined" ? null : __OMP_BUILD_COMMIT__,
-	variant: "orb.7",
+	variant: "orb.8",
 });
 
 /** Display version; VERSION remains the upstream semver for compatibility checks. */

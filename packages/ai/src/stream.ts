@@ -123,6 +123,7 @@ const PROVIDER_INFLIGHT_LOCK_RETRY_MAX_MS = 250;
 const PROVIDER_INFLIGHT_LOCK_RETRY_BUDGET_MS = 3_000;
 
 let configuredProviderMaxInFlightRequests: Record<string, number> = {};
+let configuredAntigravityRequestParity = false;
 let providerInFlightRootOverride: string | undefined;
 let providerInFlightHeartbeatMsOverride: number | undefined;
 let providerInFlightHeartbeatFlushTimeoutMsOverride: number | undefined;
@@ -139,6 +140,11 @@ let providerInFlightLockRetryTimings: { budgetMs?: number; initialDelayMs?: numb
 
 export function configureProviderMaxInFlightRequests(limits: Record<string, number> | undefined): void {
 	configuredProviderMaxInFlightRequests = limits ?? {};
+}
+
+/** Process default for `SimpleStreamOptions.antigravityRequestParity`, for callers that leave it unset. */
+export function configureAntigravityRequestParity(enabled: boolean): void {
+	configuredAntigravityRequestParity = enabled;
 }
 
 function resolveProviderInFlightLimit(
@@ -2175,6 +2181,7 @@ function mapOptionsForApi<TApi extends Api>(
 		case "google-gemini-cli": {
 			const reasoning = options?.reasoning;
 			const toolChoice = mapGoogleToolChoice(options?.toolChoice);
+			const antigravityRequestParity = options?.antigravityRequestParity ?? configuredAntigravityRequestParity;
 			if (reasoning && model.reasoning && !options?.disableReasoning && !options?.forceReasoningOff) {
 				const effort = requireSupportedEffort(model, reasoning);
 
@@ -2196,6 +2203,7 @@ function mapOptionsForApi<TApi extends Api>(
 						hideThinkingSummary: options?.hideThinkingSummary,
 						toolChoice,
 						antigravityEndpointMode: options?.antigravityEndpointMode,
+						antigravityRequestParity,
 					});
 				}
 
@@ -2219,6 +2227,7 @@ function mapOptionsForApi<TApi extends Api>(
 						hideThinkingSummary: options?.hideThinkingSummary,
 						toolChoice,
 						antigravityEndpointMode: options?.antigravityEndpointMode,
+						antigravityRequestParity,
 					});
 				}
 				// Budget clamped to zero — fall through to the thinking-off path.
@@ -2236,6 +2245,7 @@ function mapOptionsForApi<TApi extends Api>(
 				thinking,
 				toolChoice,
 				antigravityEndpointMode: options?.antigravityEndpointMode,
+				antigravityRequestParity,
 			});
 		}
 

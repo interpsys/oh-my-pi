@@ -103,6 +103,10 @@ interface Exchange {
 	/** Writes one nonempty HTTP chunk, flushed as its own body read. */
 	sendChunk(text: string): void;
 	finish(): void;
+	/** Sends a complete non-streaming response with `status`. */
+	sendStatus(status: number, body: string): void;
+	/** Closes the connection without a response. */
+	hangUp(): void;
 }
 
 /** One call the provider made through the injected fetch. */
@@ -159,6 +163,11 @@ function startFakeCcaServer(handler: (exchange: Exchange) => void | Promise<void
 				write(`${Buffer.byteLength(text).toString(16)}\r\n${text}\r\n`);
 			},
 			finish: () => write("0\r\n\r\n"),
+			sendStatus: (status, body) =>
+				write(
+					`HTTP/1.1 ${status} Status\r\ncontent-type: application/json\r\ncontent-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+				),
+			hangUp: () => socket.end(),
 		};
 		exchanges.push(exchange);
 		const handled = Promise.resolve().then(() => handler(exchange));
@@ -254,6 +263,10 @@ function sseEvent(response: Record<string, unknown>): string {
 
 function thinkingEvent(thinking: string): string {
 	return sseEvent({ candidates: [{ content: { role: "model", parts: [{ text: thinking, thought: true }] } }] });
+}
+
+function partialTextEvent(text: string): string {
+	return sseEvent({ candidates: [{ content: { role: "model", parts: [{ text }] } }] });
 }
 
 function finalTextEvent(text: string): string {
@@ -367,6 +380,36 @@ function expectFreshConnection(server: FakeCcaServer, stalled: Exchange, retry: 
 	expect(retry.requestOnConnection).toBe(0);
 	expect(retry.remotePort).not.toBe(stalled.remotePort);
 	expect(server.warmPorts).not.toContain(retry.remotePort);
+}
+
+/** How a fake endpoint withholds its response until the client gives up. */
+type Silence = "no headers" | "headers, no body";
+
+function holdSilent(exchange: Exchange, silence: Silence): Promise<void> {
+	if (silence === "headers, no body") exchange.sendHeaders();
+	return exchange.closed;
+}
+
+/**
+ * Byte silence before any output must reach the session as the CCA empty
+ * response: Antigravity Gemini continues with a changed prompt, other models
+ * consult the fallback chain, and the generic retry that resends an unchanged
+ * body never admits it, neither from the provider's id nor reclassified from text.
+ */
+function expectEscalatedToSession(message: AssistantMessage): void {
+	expect(message.stopReason).toBe("error");
+	expect(message.content).toEqual([]);
+	expect(message.errorMessage).toStartWith("Cloud Code Assist API returned an empty response: ");
+	const sessionId = AIError.classifyMessage({
+		api: message.api,
+		errorId: message.errorId,
+		errorMessage: message.errorMessage,
+		errorStatus: message.errorStatus,
+	});
+	for (const id of [message.errorId, sessionId]) {
+		expect(AIError.retriable(id)).toBe(false);
+		expect(AIError.is(id, AIError.Flag.Timeout)).toBe(false);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -503,19 +546,27 @@ test(
 	TEST_TIMEOUT_MS,
 );
 
-test(
-	"a stall after thinking has streamed surfaces a retryable timeout without replaying emitted deltas",
-	async () => {
+test.each([
+	{
+		output: "thinking",
+		chunk: thinkingEvent("Partial thought."),
+		deltaType: "thinking_delta",
+		delta: "Partial thought.",
+	},
+	{ output: "text", chunk: partialTextEvent("Partial answer."), deltaType: "text_delta", delta: "Partial answer." },
+])(
+	"a stall after $output has streamed escalates without replaying emitted deltas",
+	async ({ chunk, deltaType, delta }) => {
 		const warn = spyOnWarn();
-		let thinkingSentAt = 0;
+		let outputSentAt = 0;
 		const server = startFakeCcaServer(async exchange => {
 			if (exchange.endpoint !== DAILY_ENDPOINT) {
 				respondWithText(exchange, "Unsafe replay.");
 				return;
 			}
 			exchange.sendHeaders();
-			exchange.sendChunk(thinkingEvent("Partial thought."));
-			thinkingSentAt = performance.now();
+			exchange.sendChunk(chunk);
+			outputSentAt = performance.now();
 			return exchange.closed;
 		});
 		try {
@@ -528,12 +579,24 @@ test(
 			);
 
 			expect(message.stopReason).toBe("error");
-			expect(AIError.is(message.errorId, AIError.Flag.Timeout)).toBe(true);
-			expect(AIError.retriable(message.errorId)).toBe(true);
+			expect(AIError.is(message.errorId, AIError.Flag.Timeout)).toBe(false);
+			expect(AIError.retriable(message.errorId)).toBe(false);
+			expect(message.errorMessage).toStartWith(
+				deltaType === "thinking_delta"
+					? "Cloud Code Assist API returned an empty response: "
+					: "Cloud Code Assist API returned an incomplete response: ",
+			);
+			const sessionErrorId = AIError.classifyMessage({
+				api: message.api,
+				errorId: message.errorId,
+				errorMessage: message.errorMessage,
+				errorStatus: message.errorStatus,
+			});
+			expect(AIError.retriable(sessionErrorId)).toBe(false);
 			expect(settledAt - startedAt).toBeLessThan(RECOVERY_BOUND_MS);
 			// Bounded by the idle budget, and not tripped before it elapsed.
-			expect(settledAt - thinkingSentAt).toBeGreaterThanOrEqual(WATCHDOG_MS * 0.75);
-			expect(settledAt - thinkingSentAt).toBeLessThan(RECOVERY_BOUND_MS);
+			expect(settledAt - outputSentAt).toBeGreaterThanOrEqual(WATCHDOG_MS * 0.75);
+			expect(settledAt - outputSentAt).toBeLessThan(RECOVERY_BOUND_MS);
 
 			// Output is committed downstream: no failover and no same-endpoint replay here.
 			expect(server.fetchCalls.map(call => call.endpoint)).toEqual([DAILY_ENDPOINT]);
@@ -542,7 +605,7 @@ test(
 			const deltas = events.flatMap(event =>
 				event.type === "thinking_delta" || event.type === "text_delta" ? [[event.type, event.delta]] : [],
 			);
-			expect(deltas).toEqual([["thinking_delta", "Partial thought."]]);
+			expect(deltas).toEqual([[deltaType, delta]]);
 			expect(await closedWithin(server.exchanges[0], RECOVERY_BOUND_MS)).toBe(true);
 			expectTimeoutLogged(warn, DAILY_ENDPOINT);
 		} finally {
@@ -589,41 +652,143 @@ test(
 	TEST_TIMEOUT_MS,
 );
 
+test.each([
+	{ daily: "no headers", sandbox: "no headers" },
+	{ daily: "headers, no body", sandbox: "headers, no body" },
+	{ daily: "no headers", sandbox: "headers, no body" },
+] as const)(
+	"Antigravity auto mode sends one silent request per endpoint, then escalates (production: $daily, sandbox: $sandbox)",
+	async ({ daily, sandbox }) => {
+		spyOnWarn();
+		const server = startFakeCcaServer(exchange =>
+			holdSilent(exchange, exchange.endpoint === DAILY_ENDPOINT ? daily : sandbox),
+		);
+		try {
+			const startedAt = performance.now();
+			const { events, message, settledAt } = await collect(
+				streamGoogleGeminiCli(antigravityModel, context, {
+					...watchdogOptions(server),
+					providerSessionState: new Map<string, ProviderSessionState>(),
+					// A same-endpoint repeat shows up as a request count, not as backoff time.
+					maxRetryDelayMs: 20,
+				}),
+			);
+
+			expect(server.fetchCalls.map(call => call.endpoint)).toEqual([DAILY_ENDPOINT, SANDBOX_ENDPOINT]);
+			expect(server.exchanges.map(exchange => exchange.endpoint)).toEqual([DAILY_ENDPOINT, SANDBOX_ENDPOINT]);
+			expectEscalatedToSession(message);
+			expect(events.some(event => event.type === "start")).toBe(false);
+			expect(settledAt - startedAt).toBeLessThan(RECOVERY_BOUND_MS);
+			for (const exchange of server.exchanges) expect(await closedWithin(exchange, RECOVERY_BOUND_MS)).toBe(true);
+		} finally {
+			await server.stop();
+		}
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test.each(["no headers", "headers, no body"] as const)(
+	"explicit production endpoint sends one silent request (%s), then escalates",
+	async silence => {
+		spyOnWarn();
+		const server = startFakeCcaServer(exchange => {
+			if (exchange.endpoint !== DAILY_ENDPOINT) {
+				respondWithText(exchange, "Unexpected endpoint.");
+				return;
+			}
+			return holdSilent(exchange, silence);
+		});
+		try {
+			const startedAt = performance.now();
+			const { message, settledAt } = await collect(
+				streamGoogleGeminiCli(antigravityModel, context, {
+					...watchdogOptions(server),
+					providerSessionState: new Map<string, ProviderSessionState>(),
+					antigravityEndpointMode: "production",
+					maxRetryDelayMs: 20,
+				}),
+			);
+
+			expect(server.fetchCalls.map(call => call.endpoint)).toEqual([DAILY_ENDPOINT]);
+			expect(server.exchanges.map(exchange => exchange.endpoint)).toEqual([DAILY_ENDPOINT]);
+			expectEscalatedToSession(message);
+			expect(settledAt - startedAt).toBeLessThan(RECOVERY_BOUND_MS);
+			expect(await closedWithin(server.exchanges[0], RECOVERY_BOUND_MS)).toBe(true);
+		} finally {
+			await server.stop();
+		}
+	},
+	TEST_TIMEOUT_MS,
+);
+
 test(
-	"Gemini CLI single endpoint retries a request that never sends headers on a fresh connection",
+	"Gemini CLI single endpoint sends one request that never sends headers; the changed-prompt request opens a fresh connection",
 	async () => {
 		const warn = spyOnWarn();
 		const server = startFakeCcaServer(async exchange => {
 			if (server.exchanges.indexOf(exchange) === 0) return exchange.closed;
-			respondWithText(exchange, "Recovered after retry.");
+			respondWithText(exchange, "Recovered on the changed prompt.");
 		});
 		try {
 			await server.warmPool();
+			const options = {
+				...watchdogOptions(server),
+				providerSessionState: new Map<string, ProviderSessionState>(),
+				maxRetryDelayMs: 20,
+			};
 
 			const startedAt = performance.now();
-			const { message, settledAt } = await collect(
-				streamGoogleGeminiCli(geminiCliModel, context, {
+			const failed = await collect(streamGoogleGeminiCli(geminiCliModel, context, options));
+
+			expectEscalatedToSession(failed.message);
+			expect(failed.settledAt - startedAt).toBeLessThan(RECOVERY_BOUND_MS);
+			expect(server.fetchCalls.map(call => call.endpoint)).toEqual([GEMINI_CLI_ENDPOINT]);
+			const [stalled] = server.exchanges;
+			expect(server.fetchCalls[0].signal?.aborted).toBe(true);
+			expect(await closedWithin(stalled, RECOVERY_BOUND_MS)).toBe(true);
+			expectTimeoutLogged(warn, GEMINI_CLI_ENDPOINT);
+
+			// Session recovery appends a turn; that request avoids the pool that stalled.
+			const changedPrompt: Context = {
+				messages: [...context.messages, { role: "user", content: "Continue.", timestamp: 2 }],
+			};
+			const recovered = await collect(streamGoogleGeminiCli(geminiCliModel, changedPrompt, options));
+
+			expect(recovered.message.errorMessage).toBeUndefined();
+			expect(contentSummary(recovered.message)).toEqual([["text", "Recovered on the changed prompt."]]);
+			expect(server.fetchCalls.map(call => call.endpoint)).toEqual([GEMINI_CLI_ENDPOINT, GEMINI_CLI_ENDPOINT]);
+			expect(server.exchanges).toHaveLength(2);
+			expectFreshConnection(server, stalled, server.exchanges[1], server.fetchCalls[1]);
+		} finally {
+			await server.stop();
+		}
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test(
+	"a single endpoint still retries HTTP 503 and a connection closed before headers",
+	async () => {
+		spyOnWarn();
+		const server = startFakeCcaServer(exchange => {
+			const index = server.exchanges.indexOf(exchange);
+			if (index === 0) exchange.sendStatus(503, '{"error":{"code":503,"message":"Service unavailable"}}');
+			else if (index === 1) exchange.hangUp();
+			else respondWithText(exchange, "Recovered after retries.");
+		});
+		try {
+			const { message } = await collect(
+				streamGoogleGeminiCli(antigravityModel, context, {
 					...watchdogOptions(server),
-					// The test measures stall recovery, not the backoff schedule.
-					maxRetryDelayMs: 100,
+					providerSessionState: new Map<string, ProviderSessionState>(),
+					antigravityEndpointMode: "production",
+					maxRetryDelayMs: 20,
 				}),
 			);
 
 			expect(message.errorMessage).toBeUndefined();
-			expect(message.stopReason).toBe("stop");
-			expect(contentSummary(message)).toEqual([["text", "Recovered after retry."]]);
-			expect(settledAt - startedAt).toBeLessThan(RECOVERY_BOUND_MS);
-			expect(server.fetchCalls.map(call => call.endpoint)).toEqual([GEMINI_CLI_ENDPOINT, GEMINI_CLI_ENDPOINT]);
-			expect(server.exchanges.map(exchange => exchange.endpoint)).toEqual([
-				GEMINI_CLI_ENDPOINT,
-				GEMINI_CLI_ENDPOINT,
-			]);
-
-			const [stalled, retry] = server.exchanges;
-			expect(server.fetchCalls[0].signal?.aborted).toBe(true);
-			expect(await closedWithin(stalled, RECOVERY_BOUND_MS)).toBe(true);
-			expectFreshConnection(server, stalled, retry, server.fetchCalls[1]);
-			expectTimeoutLogged(warn, GEMINI_CLI_ENDPOINT);
+			expect(contentSummary(message)).toEqual([["text", "Recovered after retries."]]);
+			expect(server.fetchCalls.map(call => call.endpoint)).toEqual([DAILY_ENDPOINT, DAILY_ENDPOINT, DAILY_ENDPOINT]);
 		} finally {
 			await server.stop();
 		}

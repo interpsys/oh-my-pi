@@ -27,6 +27,7 @@ import type {
 	StreamOptions,
 	TextContent,
 	ThinkingContent,
+	Tool,
 	ToolCall,
 } from "../types";
 import { normalizeSystemPrompts } from "../utils";
@@ -44,7 +45,7 @@ import { getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs } from "../utils/i
 import { armStreamByteWatchdog, type StreamByteWatchdog } from "../utils/stream-byte-watchdog";
 // Refresh is the sole responsibility of AuthStorage (broker-aware, single-flighted);
 // the stream provider trusts the access token threaded through `options.apiKey`.
-import { normalizeSchemaForCCA } from "../utils/schema";
+import { normalizeSchemaForAntigravityGemini, normalizeSchemaForCCA, toolWireSchema } from "../utils/schema";
 import { StreamMarkupHealing, type StreamMarkupHealingEvent } from "../utils/stream-markup-healing";
 import { prepareAnthropicImageContext } from "./anthropic-images";
 import forcedToolDirective from "./google-antigravity-forced-tool.md" with { type: "text" };
@@ -284,6 +285,18 @@ export interface GoogleGeminiCliOptions extends StreamOptions {
 	projectId?: string;
 	/** Antigravity endpoint routing mode: "auto" (default with failover), "production", "sandbox". */
 	antigravityEndpointMode?: "auto" | "production" | "sandbox";
+	/**
+	 * google-antigravity Gemini only: encode the request like the official
+	 * Antigravity 2.31.2 client. Every real thought signature replays (the
+	 * bypass sentinel only on an unsigned first call), unsigned thought
+	 * summaries are dropped, function calls and responses carry part ids with
+	 * each response its own `model`-role content in call order, the body carries
+	 * `requestType: "agent"` and no `toolConfig` (a forced choice keeps its
+	 * transcript directive), and each tool declaration is its own `tools` entry
+	 * in Google Schema encoding. Other routes, including Antigravity Claude,
+	 * ignore it.
+	 */
+	antigravityRequestParity?: boolean;
 	providerSessionState?: Map<string, ProviderSessionState>;
 	/** Optional override directory for empty-response diagnostic dumps (used in isolated tests). */
 	emptyResponseDumpDir?: string;
@@ -670,6 +683,9 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 						retryReason = `HTTP ${response.status}`;
 						return true;
 					},
+					// HTTP 429/5xx and network errors retry on the last endpoint; a byte
+					// timeout leaves the endpoint after this one request.
+					shouldRetryError: error => !(error instanceof AIError.StreamTimeoutError),
 					fetch: async (input, init) => {
 						activeWatchdog?.clear();
 						if (requestAttempt > 0) {
@@ -1265,9 +1281,31 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 						if (providerState) {
 							if (endpoints.length > 1) providerState.lastGoodEndpoint = endpoints[(i + 1) % endpoints.length];
 						}
-						if (!started && isLastEndpoint && requestAttempt < MAX_RETRIES + 1) {
-							endpoints.push(endpoints[0]);
-							continue;
+						// Before output, visit each endpoint once. After output, do not
+						// replay committed deltas on another endpoint. Both paths must
+						// bypass the session's unchanged-body retry: empty/thought-only
+						// turns continue with a changed prompt; partial answers fall back.
+						if (started || isLastEndpoint) {
+							const silence = responseBytes === 0 ? "first-byte" : "idle";
+							const diagnostics = JSON.stringify({
+								endpoint,
+								attempt: requestAttempt,
+								elapsedMs: performance.now() - startTime,
+								responseBytes,
+								silence,
+								silenceBudgetMs: silence === "first-byte" ? firstEventTimeoutMs : idleTimeoutMs,
+							});
+							const responseKind = output.content.some(
+								block =>
+									(block.type === "text" && block.text.trim().length > 0) ||
+									(block.type === "toolCall" && block.name.trim().length > 0),
+							)
+								? "incomplete"
+								: "empty";
+							throw new AIError.ProviderResponseError(
+								`Cloud Code Assist API returned an ${responseKind} response: ${diagnostics}`,
+								{ provider: model.provider, kind: "output" },
+							);
 						}
 					} else {
 						retryReason = error instanceof Error ? error.message : String(error);
@@ -1399,6 +1437,22 @@ function normalizeAntigravityTools(
 	}));
 }
 
+/**
+ * The official Antigravity client's tool packing: one `tools` entry per
+ * declaration, its schema on `parameters` in Google Schema proto encoding.
+ */
+function convertAntigravityParityTools(tools: Tool[]): CloudCodeAssistRequest["request"]["tools"] {
+	return tools.map(tool => ({
+		functionDeclarations: [
+			{
+				name: tool.name,
+				description: tool.description || "",
+				parameters: normalizeSchemaForAntigravityGemini(toolWireSchema(tool)),
+			},
+		],
+	}));
+}
+
 interface AntigravityRequestEnvelope {
 	sessionId: string;
 	requestId: string;
@@ -1476,8 +1530,14 @@ export function buildRequest(
 	// Captured failing bodies all succeed with those steps unsigned; tool-loop
 	// steps keep their signatures, so the reasoning chain across consecutive
 	// tool calls survives.
+	// `antigravityRequestParity` instead encodes Antigravity Gemini requests like
+	// four captured official 2.31.2 bodies, which replay every real signature;
+	// it stays off by default until a live A/B against this workaround passes.
+	const officialParity =
+		isAntigravity && model.identity.class === "gemini" && options.antigravityRequestParity === true;
 	const contents = convertMessages(model, context, {
-		unsignedTurnOpeningSteps: isAntigravity && model.identity.class === "gemini",
+		unsignedTurnOpeningSteps: isAntigravity && model.identity.class === "gemini" && !officialParity,
+		antigravityRequestParity: officialParity,
 	});
 	const generationConfig: CloudCodeAssistRequest["request"]["generationConfig"] = {};
 	if (options.temperature !== undefined) {
@@ -1535,19 +1595,23 @@ export function buildRequest(
 	}
 
 	if (context.tools && context.tools.length > 0) {
-		const convertedTools = convertTools(context.tools, model);
-		request.tools = isAntigravity ? normalizeAntigravityTools(convertedTools) : convertedTools;
+		request.tools = officialParity
+			? convertAntigravityParityTools(context.tools)
+			: isAntigravity
+				? normalizeAntigravityTools(convertTools(context.tools, model))
+				: convertTools(context.tools, model);
+		let toolConfig: CloudCodeAssistRequest["request"]["toolConfig"];
 		if (options.toolChoice) {
 			const choice = options.toolChoice;
 			if (typeof choice === "string") {
 				const mode = mapToolChoice(choice);
 				if (mode !== "AUTO") {
-					request.toolConfig = {
+					toolConfig = {
 						functionCallingConfig: { mode },
 					};
 				}
 			} else {
-				request.toolConfig = {
+				toolConfig = {
 					functionCallingConfig: {
 						mode: "ANY",
 						allowedFunctionNames: [...choice.allowedFunctionNames],
@@ -1561,18 +1625,21 @@ export function buildRequest(
 			if (
 				isAntigravity &&
 				model.identity.class !== "anthropic" &&
-				request.toolConfig?.functionCallingConfig.mode === "ANY"
+				toolConfig?.functionCallingConfig.mode === "ANY"
 			) {
 				contents.push({ role: "user", parts: [{ text: forcedToolDirective }] });
 			}
 		}
 		// Antigravity's default tool mode is VALIDATED (verified for Gemini and
-		// Claude); an explicit non-auto tool choice above wins.
-		if (isAntigravity && !request.toolConfig) {
-			request.toolConfig = {
+		// Claude); an explicit non-auto tool choice above wins. The official
+		// client sends no `toolConfig` at all, so parity omits it; a forced
+		// choice still reaches the model through the directive above.
+		if (isAntigravity && !toolConfig) {
+			toolConfig = {
 				functionCallingConfig: { mode: "VALIDATED" as FunctionCallingConfigMode },
 			};
 		}
+		if (toolConfig && !officialParity) request.toolConfig = toolConfig;
 	}
 
 	// Claude on Antigravity always forces VALIDATED, even with no tools declared.
@@ -1634,6 +1701,7 @@ export function buildRequest(
 			request,
 			model: wireModelId,
 			userAgent: "antigravity",
+			...(officialParity && { requestType: "agent" }),
 		};
 	}
 

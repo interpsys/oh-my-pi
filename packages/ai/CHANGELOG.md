@@ -5,10 +5,12 @@
 ### Added
 
 - Assistant turns carry `responseModel`, the model id the provider response itself reported (Anthropic `message.model`, Gemini/Antigravity `modelVersion`, OpenAI Responses and Codex `response.model`, Chat Completions chunk `model`); it is never copied from the request and is cleared when a retry discards the attempt that reported it.
+- Added the `antigravityRequestParity` option (off by default) that encodes Google Antigravity Gemini requests like the official Antigravity 2.31.2 client: real thought signatures replay across turns, unsigned thought summaries are not resent, tool results go back as id-matched model-role turns, the body carries `requestType: "agent"` without `toolConfig`, and each tool is declared separately in Google Schema encoding with its length, item-count and numeric bounds kept
 
 ### Fixed
 
 - Cloud Code Assist / Antigravity aborts silent HTTP requests and idle response bodies after 300 seconds without bytes, with configurable deadlines, fresh-connection retries and safe alternate-endpoint failover; thinking and partial SSE traffic keep active streams alive. Empty STOP responses no longer trigger repeated identical-body requests on the same endpoint: bounded endpoint failover surfaces an error to changed-prompt session recovery, and every resend is logged.
+- Cloud Code Assist / Antigravity byte-silence timeouts no longer resend the same body: before output each endpoint gets one timed-out request, then an empty-response error reaches changed-prompt recovery or fallback; after output, thought-only turns use that same recovery and partial answers fail as incomplete without replaying deltas. HTTP 429/5xx and other network retries are unchanged.
 - Cloud Code Assist empty responses retain finish, block and token-usage diagnostics and bounded raw SSE response dumps (`raw-empty-response=`) after bounded endpoint failover, then consult changed-prompt same-model recovery or configured model fallbacks instead of restarting an unchanged request.
 - Empty-response diagnostics reuse parsed SSE frames instead of decoding the wire payload twice.
 - Fixed tool calls served through the Anthropic auth gateway losing their inputs when arguments arrive only at the end of the call.
