@@ -2,7 +2,7 @@
 
 Schema-Version: 2
 Kind: feature
-Status: OPEN
+Status: DONE
 Lane: harness
 Repo: interpsys/oh-my-pi
 Owner: CarbonOfficialParity-81556c038d06@chat
@@ -65,7 +65,11 @@ Request-type omission provenance: f1fb41a9687191114be4a407b16c9fdcfb761027 (2026
 
 ## Resolution
 
-Pending implementation, A/B and deployment; no resolving commit yet.
+Resolved by merged PR #23, commit 6ca1c55288fdb22253da14798177f70818452d6f, released and installed as v18.18.5-orb.8. Full parity is default-off: frozen A/B Carbon baseline 39ok/60empty/1HTTP400 versus parity100HTTP429; Hydrogen baseline40ok versus parity40HTTP429. All280 assigned trials completed,0missing;305 physical model requests including warmup, authentic Hydrogen continuity and installed smokes, below400. Apparent empty/400 reductions are competing429 failures, not reliability gains. Every cell and Wilson95 interval: https://github.com/interpsys/oh-my-pi/releases/download/v18.18.5-orb.8/AB-RESULT.md.
+
+Installed SHA256 536f9d180a771a3638a8f282e501cb90cdc9e451c91031447c19efc662a42cf8 matches built and downloaded release asset; strict codesign/checksum passed and manager.json synchronized. Rollback: ~/.local/share/omp/bin/omp.pre-orb8-backup and ~/.local/share/omp/manager.pre-orb8-backup.json. New-process Carbon-off and Hydrogen-off exact-reply controls passed; Carbon-on produced correct parity wire shape but HTTP429 (negative control, not a passing smoke). No running processes restarted.
+
+Provider/utility282pass0fail; session/settings308pass0fail; scoped18TS lint/format clean; workspaceTS stage completed, then Rust stage passed after installing missing core Ninja. No CI checks are reported for this release-base branch; no green CI claim. Source/model-switch and other-provider negative controls passed. Native ticket closed DONE with exact resolving SHA and /Users/compoooter/tmp/workers/carbon-official-parity/RESULT.md plus INSTALL-RECEIPT.json; raw receipts remain there. A fresh component-isolation experiment is separately authorized, not a post-hoc amendment of this A/B.
 
 ## Log
 

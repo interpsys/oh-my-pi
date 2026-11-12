@@ -2,7 +2,7 @@
 
 Schema-Version: 2
 Kind: defect
-Status: OPEN
+Status: DONE
 Lane: harness
 Repo: interpsys/oh-my-pi
 Owner: CarbonOfficialParity-81556c038d06@chat
@@ -49,7 +49,9 @@ Ship in orb.8 with the parity release, retain source/installed SHA256 and portab
 
 ## Resolution
 
-Pending portable before/after verification and release; no resolving SHA yet.
+Resolved by merged PR #23, commit 6ca1c55288fdb22253da14798177f70818452d6f; released/installed v18.18.5-orb.8. Before: portable watchdog controls8pass6fail; emitted-output stall controls0pass2fail. After: provider/utility282pass0fail with endpoint limits, changed-prompt classification, emitted-output, callerabort, raw-byte trickle and preserved HTTP/network retry controls. Session/settings308pass0fail; scoped TS lint/format clean; workspaceTS stage completed and Rust stage passed after installing missing Ninja. No applicable release-branch CI checks were reported.
+
+Installed and downloaded binary SHA256 536f9d180a771a3638a8f282e501cb90cdc9e451c91031447c19efc662a42cf8; compiled identity orb.8 6ca1c55. New-process default-off Carbon/Hydrogen exact-reply controls passed. Strict codesign/checksum and installed manager identity verified; rollback binary ~/.local/share/omp/bin/omp.pre-orb8-backup plus manager.pre-orb8-backup.json. No existing omp process restarted. Native ticket closed DONE with exact resolving SHA and /Users/compoooter/tmp/workers/carbon-official-parity/RESULT.md plus INSTALL-RECEIPT.json. Full-parity HTTP429 remains a documented opt-in limitation, not a timeout recovery success claim.
 
 ## Log
 
