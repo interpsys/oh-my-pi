@@ -81,6 +81,7 @@ import {
 } from "./extensibility/plugins/marketplace-auto-update";
 import { registerDaemonProjectPresence } from "./launch/presence";
 import type { MCPManager } from "./mcp";
+import { disableMCPForProcess } from "./mcp/process-opt-out";
 import type { InteractiveMode } from "./modes/interactive-mode";
 import { formatSessionContinuationNotice } from "./modes/persistence-failure";
 import type { PrintModeOptions } from "./modes/print-mode";
@@ -1762,6 +1763,10 @@ export async function buildSessionOptions(
 		options.enableLsp = false;
 	}
 
+	if (parsed.noMcp) {
+		options.enableMCP = false;
+	}
+
 	// Skills
 	if (parsed.noSkills) {
 		options.skills = [];
@@ -1847,6 +1852,9 @@ export async function runRootCommand(
 		await logger.time("initTheme:initial", ensureTheme);
 
 		const parsedArgs = parsed;
+		// Process-wide, before any session or protocol host exists: a later `/mcp`
+		// command, ACP client server or lazy `mcp://` read must not start MCP either.
+		if (parsedArgs.noMcp) disableMCPForProcess();
 		try {
 			await logger.time("applyStartupCwd", applyStartupCwd, parsedArgs);
 		} catch (error: unknown) {

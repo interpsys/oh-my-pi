@@ -5,11 +5,11 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
 const ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
-const FLASH_FIRST_EVENT_TIMEOUT_MS = 60_000;
+const FIRST_BYTE_TIMEOUT_MS = 300_000;
 const context: Context = { messages: [{ role: "user", content: "hi", timestamp: 1 }] };
 const antigravityModel: Model<"google-gemini-cli"> = buildModel({
-	id: "gemini-3-flash",
-	name: "Gemini 3 Flash (Antigravity)",
+	id: "gemini-4-carbon",
+	name: "Gemini 4 Carbon (Antigravity)",
 	api: "google-gemini-cli",
 	provider: "google-antigravity",
 	baseUrl: ANTIGRAVITY_DAILY_ENDPOINT,
@@ -43,7 +43,7 @@ function responseWithUrl(response: Response, endpoint: string): Response {
 	return response;
 }
 
-test("Antigravity Flash fails over when headers arrive without a first SSE event", async () => {
+test("Antigravity Carbon tolerates 146-second silence and fails over at the first-byte deadline", async () => {
 	const requestedEndpoints: string[] = [];
 	let dailyBodyCancelled = false;
 	const dailyBodyReadStarted = Promise.withResolvers<void>();
@@ -91,7 +91,10 @@ test("Antigravity Flash fails over when headers arrive without a first SSE event
 	const resultPromise = stream.result();
 	await dailyBodyReadStarted.promise;
 	expect(vi.getTimerCount()).toBeGreaterThan(0);
-	vi.advanceTimersByTime(FLASH_FIRST_EVENT_TIMEOUT_MS * 2);
+	// A real high-thinking turn was silent for 146s; preserve that valid cold start.
+	vi.advanceTimersByTime(146_000);
+	expect(dailyBodyCancelled).toBe(false);
+	vi.advanceTimersByTime(FIRST_BYTE_TIMEOUT_MS - 146_000);
 	const result = await resultPromise;
 
 	expect(requestedEndpoints).toEqual([ANTIGRAVITY_DAILY_ENDPOINT, ANTIGRAVITY_SANDBOX_ENDPOINT]);

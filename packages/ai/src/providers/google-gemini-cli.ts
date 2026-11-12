@@ -4,7 +4,6 @@
  * Uses the Cloud Code Assist API endpoint to access Gemini and Claude models.
  */
 import { randomBytes, randomUUID } from "node:crypto";
-import { scheduler } from "node:timers/promises";
 import { type } from "@oh-my-pi/omptype";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { isReviewedTierVariantWireId } from "@oh-my-pi/pi-catalog/compat/collapse";
@@ -14,7 +13,7 @@ import {
 	getAntigravityModelWireProfile,
 	getGeminiCliHeaders,
 } from "@oh-my-pi/pi-catalog/wire/gemini-headers";
-import { extractHttpStatusFromError, fetchWithRetry, readSseJson } from "@oh-my-pi/pi-utils";
+import { extractHttpStatusFromError, fetchWithRetry, logger, readSseJson } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import { oauthAccountKey } from "../auth/types";
 import type {
@@ -41,7 +40,8 @@ import {
 	type RawEmptyResponseSseEvent,
 	type RawHttpRequestDump,
 } from "../utils/http-inspector";
-import { armPreResponseTimeout, getStreamFirstEventTimeoutMs, iterateWithIdleTimeout } from "../utils/idle-iterator";
+import { getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs } from "../utils/idle-iterator";
+import { armStreamByteWatchdog, type StreamByteWatchdog } from "../utils/stream-byte-watchdog";
 // Refresh is the sole responsibility of AuthStorage (broker-aware, single-flighted);
 // the stream provider trusts the access token threaded through `options.apiKey`.
 import { normalizeSchemaForCCA } from "../utils/schema";
@@ -52,11 +52,9 @@ import type { Content, FunctionCallingConfigMode, ThinkingConfig } from "./googl
 import {
 	convertMessages,
 	convertTools,
-	EMPTY_STREAM_BASE_DELAY_MS,
 	type GoogleThinkingLevel,
 	hasMeaningfulGoogleContent,
 	isThinkingPart,
-	MAX_EMPTY_STREAM_RETRIES,
 	mapGoogleUsage,
 	mapStopReasonString,
 	mapToolChoice,
@@ -333,11 +331,12 @@ const ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
 const ANTIGRAVITY_ENDPOINT_FALLBACKS = [ANTIGRAVITY_DAILY_ENDPOINT, ANTIGRAVITY_SANDBOX_ENDPOINT] as const;
 
+// Runtime-only: a process restart already discards the old connection pool.
+const FRESH_CONNECTION_SESSIONS = new WeakSet<Map<string, ProviderSessionState>>();
 // Retry configuration
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
-const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 300_000;
-const FIRST_EVENT_TIMEOUT_ERROR = "Cloud Code Assist stream timed out while waiting for the first event";
+const DEFAULT_STREAM_TIMEOUT_MS = 300_000;
 const RATE_LIMIT_BUDGET_MS = 5 * 60 * 1000;
 const CLAUDE_THINKING_BETA_HEADER = "interleaved-thinking-2025-05-14";
 const GOOGLE_GEMINI_REFRESH_SKEW_MS = 60_000;
@@ -638,17 +637,75 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				headers: requestHeaders,
 			};
 
-			// The provider owns the first-event watchdog so a silent successful
-			// response can fail over to the alternate Antigravity endpoint before
-			// anything user-visible has streamed. Flash should not inherit the
-			// five-minute allowance reserved for cold Pro reasoning starts.
+			// Cold reasoning starts can legitimately exceed two minutes. Watch raw
+			// bytes, not parsed events, with independent configurable phase budgets.
 			const firstEventTimeoutMs =
 				options?.streamFirstEventTimeoutMs ??
 				getStreamFirstEventTimeoutMs(
 					undefined,
-					model.compat.streamFirstEventTimeoutMs ?? DEFAULT_FIRST_EVENT_TIMEOUT_MS,
+					model.compat?.streamFirstEventTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS,
 				);
+			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs(DEFAULT_STREAM_TIMEOUT_MS);
 			const callerSignal = options?.signal;
+			let activeWatchdog: StreamByteWatchdog | undefined;
+			let freshConnection = options?.providerSessionState
+				? FRESH_CONNECTION_SESSIONS.has(options.providerSessionState)
+				: false;
+			let responseBytes = 0;
+			let requestAttempt = 0;
+			let retryReason = "initial request";
+			let retryFinishReason: string | undefined;
+			const fetchResponse = (endpoint: string, maxAttempts: number): Promise<Response> =>
+				fetchWithRetry(`${endpoint}/v1internal:streamGenerateContent?alt=sse`, {
+					method: "POST",
+					headers: requestHeaders,
+					body: requestBodyJson,
+					signal: callerSignal,
+					maxAttempts,
+					defaultDelayMs: attempt => BASE_DELAY_MS * 2 ** attempt,
+					maxDelayMs: options?.maxRetryDelayMs ?? RATE_LIMIT_BUDGET_MS,
+					timeout: false,
+					shouldRetryResponse: (response, bodyText) => {
+						responseBytes = Buffer.byteLength(bodyText);
+						retryReason = `HTTP ${response.status}`;
+						return true;
+					},
+					fetch: async (input, init) => {
+						activeWatchdog?.clear();
+						if (requestAttempt > 0) {
+							logger.warn("Cloud Code Assist request retry", {
+								reason: retryReason,
+								endpoint,
+								attempt: requestAttempt + 1,
+								elapsedMs: performance.now() - startTime,
+								responseBytes,
+								finishReason: retryFinishReason ?? null,
+								freshConnection,
+							});
+						}
+						requestAttempt += 1;
+						responseBytes = 0;
+						const watchdog = armStreamByteWatchdog(callerSignal, firstEventTimeoutMs, idleTimeoutMs, endpoint);
+						activeWatchdog = watchdog;
+						try {
+							return await watchdog.run(
+								(options?.fetch ?? fetch)(input, {
+									...init,
+									signal: watchdog.signal,
+									...(freshConnection ? { keepalive: false } : {}),
+								}),
+							);
+						} catch (error) {
+							retryReason = watchdog.error ? "stream first-byte timeout" : "network error";
+							if (watchdog.error) {
+								freshConnection = true;
+								if (options?.providerSessionState) FRESH_CONNECTION_SESSIONS.add(options.providerSessionState);
+							}
+							watchdog.clear();
+							throw error;
+						}
+					},
+				});
 			const toolNames = new Set(context.tools?.map(t => t.name) ?? []);
 			const isFlashLeakModel = model.compat.flashStreamLeakWorkaround;
 
@@ -823,15 +880,14 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					}
 				};
 
-				const responseAbortController = new AbortController();
-				const responseSignal = options?.signal
-					? AbortSignal.any([options.signal, responseAbortController.signal])
-					: responseAbortController.signal;
+				const responseSignal = activeWatchdog?.signal ?? callerSignal;
 				const onSseEvent = options?.onSseEvent;
-				const chunks = iterateWithIdleTimeout(
-					// Retain bounded raw evidence until output arrives; reuse the reader's
-					// parsed chunk below instead of decoding every frame a second time.
-					readSseJson<CloudCodeAssistResponseChunk>(activeResponse.body, responseSignal, event => {
+				// The byte observer runs before SSE framing, so thinking, comments and
+				// partial JSON keep the transport alive without visible output.
+				const chunks = readSseJson<CloudCodeAssistResponseChunk>(
+					activeResponse.body,
+					responseSignal,
+					event => {
 						onSseEvent?.({ event: event.event ?? "message", data: event.data, raw: [...event.raw] }, model);
 						if (!captureActive) return;
 						const rawLines = [...event.raw];
@@ -854,14 +910,10 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 							data: event.data,
 							raw: rawLines,
 						});
-					}),
-					{
-						firstItemTimeoutMs: firstEventTimeoutMs,
-						errorMessage: FIRST_EVENT_TIMEOUT_ERROR,
-						firstItemErrorMessage: FIRST_EVENT_TIMEOUT_ERROR,
-						onFirstItemTimeout: () =>
-							responseAbortController.abort(new AIError.StreamTimeoutError(FIRST_EVENT_TIMEOUT_ERROR)),
-						abortSignal: options?.signal,
+					},
+					byteLength => {
+						responseBytes += byteLength;
+						activeWatchdog?.onBytes(byteLength);
 					},
 				);
 				for await (const chunk of chunks) {
@@ -1042,30 +1094,12 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					started = false;
 					resetOutput();
 
-					// Per attempt: arm a pre-response (TTFT) timer, cleared the instant
-					// headers arrive so it never aborts the actively streaming body —
-					// an absolute `AbortSignal.timeout` would (issue #2422).
-					const watchdog = armPreResponseTimeout(callerSignal, firstEventTimeoutMs);
-					let response: Response;
-					try {
-						response = await fetchWithRetry(() => `${endpoint}/v1internal:streamGenerateContent?alt=sse`, {
-							method: "POST",
-							headers: requestHeaders,
-							body: requestBodyJson,
-							signal: watchdog.signal,
-							maxAttempts: isLastEndpoint ? MAX_RETRIES + 1 : 1,
-							defaultDelayMs: attempt => BASE_DELAY_MS * 2 ** attempt,
-							maxDelayMs: options?.maxRetryDelayMs ?? RATE_LIMIT_BUDGET_MS,
-							fetch: options?.fetch,
-							timeout: false,
-						});
-					} finally {
-						watchdog.clear();
-					}
+					const response = await fetchResponse(endpoint, isLastEndpoint ? MAX_RETRIES + 1 : 1);
 
 					if (!response.ok) {
 						if (AIError.isTransientStatus(response.status)) {
 							if (!isLastEndpoint) {
+								retryReason = `HTTP ${response.status}`;
 								continue;
 							}
 						}
@@ -1086,7 +1120,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					}
 
 					const requestUrl = response.url;
-					let currentResponse = response;
+					const currentResponse = response;
 					let lastEmptyCapture:
 						| {
 								status: number;
@@ -1100,77 +1134,45 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 						  }
 						| undefined;
 
-					for (let emptyAttempt = 0; emptyAttempt <= MAX_EMPTY_STREAM_RETRIES; emptyAttempt++) {
-						if (options?.signal?.aborted) {
-							throw new AIError.AbortError("Request was aborted");
+					// Never repeat an identical prompt after a complete empty response.
+					// Try the alternate endpoint once, then let session recovery append
+					// its bounded continuation reminder before sending another request.
+					const streamed = await activeWatchdog!.run(streamResponse(currentResponse)).finally(async () => {
+						activeWatchdog?.clear();
+						// Injected transports may not cancel an unconsumed body when
+						// their signal aborts before the SSE reader takes its lock.
+						if (activeWatchdog?.signal.aborted && !currentResponse.body?.locked) {
+							await currentResponse.body?.cancel().catch(() => {});
 						}
-
-						if (emptyAttempt > 0) {
-							const backoffMs = EMPTY_STREAM_BASE_DELAY_MS * 2 ** (emptyAttempt - 1);
-							try {
-								await scheduler.wait(backoffMs, { signal: options?.signal });
-							} catch {
-								throw new AIError.AbortError("Request was aborted");
-							}
-
-							if (!requestUrl) {
-								throw new AIError.ConfigurationError("Missing request URL");
-							}
-
-							currentResponse = await (options?.fetch ?? fetch)(requestUrl, {
-								method: "POST",
-								headers: requestHeaders,
-								body: requestBodyJson,
-								signal: options?.signal,
-							});
-
-							if (!currentResponse.ok) {
-								const retryErrorText = await currentResponse.text();
-								throw new AIError.GeminiCliApiError(
-									`Cloud Code Assist API error (${currentResponse.status}): ${retryErrorText}`,
-									currentResponse.status,
-									{ headers: currentResponse.headers },
-								);
-							}
-						}
-
-						const streamed = await streamResponse(currentResponse);
-						// Eventless silence may fail over to the alternate Antigravity
-						// endpoint. Once thinking has streamed, the endpoint is already
-						// committed downstream; Advisor mode may accept that silence,
-						// while normal sessions surface it to final-output recovery.
-						const thoughtOnly = hasThinkingOutput();
-						const acceptedSilence =
-							options?.acceptEmptyResponse === true &&
-							!streamed.strippedPlanningLeak &&
-							(isLastEndpoint || thoughtOnly);
-						if (output.stopReason !== "stop" || streamed.meaningful || acceptedSilence) {
-							receivedContent = streamed.meaningful || acceptedSilence;
-							break;
-						}
-						if (!thoughtOnly) {
-							lastEmptyCapture = {
-								status: currentResponse.status,
-								url:
-									currentResponse.url || requestUrl || `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
-								headers: Object.fromEntries(currentResponse.headers.entries()),
-								events: streamed.capturedRawEvents,
-								chunks: streamed.capturedRawChunks,
-								truncated: streamed.capturedTruncated,
-								omittedEvents: streamed.capturedOmittedEvents,
-								omittedBytes: streamed.capturedOmittedBytes,
-							};
-						}
-
-						// A thought-only STOP is a complete provider response, not a
-						// transiently empty transport. Replaying the identical request
-						// burns another full reasoning pass; let session recovery add
-						// an explicit final-output reminder instead.
-						if (thoughtOnly) break;
-
-						if (emptyAttempt < MAX_EMPTY_STREAM_RETRIES) {
-							resetOutput();
-						}
+					});
+					retryFinishReason = lastFinishReason;
+					const thoughtOnly = hasThinkingOutput();
+					const acceptedSilence =
+						options?.acceptEmptyResponse === true &&
+						!streamed.strippedPlanningLeak &&
+						(isLastEndpoint || thoughtOnly);
+					receivedContent = streamed.meaningful || acceptedSilence;
+					if (!receivedContent && !thoughtOnly) {
+						lastEmptyCapture = {
+							status: currentResponse.status,
+							url: currentResponse.url || requestUrl || `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
+							headers: Object.fromEntries(currentResponse.headers.entries()),
+							events: streamed.capturedRawEvents,
+							chunks: streamed.capturedRawChunks,
+							truncated: streamed.capturedTruncated,
+							omittedEvents: streamed.capturedOmittedEvents,
+							omittedBytes: streamed.capturedOmittedBytes,
+						};
+						logger.warn("Cloud Code Assist returned empty output", {
+							reason: "empty STOP response",
+							endpoint,
+							attempt: requestAttempt,
+							elapsedMs: performance.now() - startTime,
+							responseBytes,
+							finishReason: lastFinishReason ?? null,
+							candidateCount,
+							nextAction: isLastEndpoint ? "surface error to session recovery" : "try alternate endpoint once",
+						});
 					}
 
 					if (output.stopReason === "aborted" || output.stopReason === "error") {
@@ -1186,15 +1188,18 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 							? "Cloud Code Assist API returned a thought-only response without final output"
 							: "Cloud Code Assist API returned an empty response";
 						const diagnostics = JSON.stringify({
+							endpoint,
+							attempt: requestAttempt,
+							elapsedMs: performance.now() - startTime,
+							responseBytes,
 							candidates: candidateCount,
 							finishReason: lastFinishReason ?? null,
 							promptFeedback: lastPromptFeedback ?? null,
 							usageMetadata: lastUsageMetadata ?? null,
 						});
-						// Local empty-stream retries are already spent. Keep an earlier
-						// endpoint retryable only to reach the next endpoint; after the
-						// last one, consult the session's hard-error fallback rather than
-						// multiplying this budget by retry.maxRetries.
+						// One response per endpoint is sufficient for a complete empty
+						// result. The final error is nonretryable by generic HTTP retry;
+						// session recovery changes the prompt with a bounded reminder.
 						const emptyKind = isLastEndpoint ? "output" : "empty-body";
 						let errorMessage = `${description}: ${diagnostics}`;
 						if (!thoughtOnly && emptyKind === "output" && lastEmptyCapture) {
@@ -1244,6 +1249,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					) {
 						providerState.lastGoodEndpoint = endpoint;
 					}
+					if (options?.providerSessionState) FRESH_CONNECTION_SESSIONS.delete(options.providerSessionState);
 					// Commit after a fully successful attempt (content + finish reason);
 					// used as the next request's last_execution_id. Overwrite even when
 					// undefined so a response without an id can't leave a stale value.
@@ -1252,6 +1258,20 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					}
 					break;
 				} catch (error) {
+					if (error instanceof AIError.StreamTimeoutError) {
+						freshConnection = true;
+						if (options?.providerSessionState) FRESH_CONNECTION_SESSIONS.add(options.providerSessionState);
+						retryReason = "stream byte timeout";
+						if (providerState) {
+							if (endpoints.length > 1) providerState.lastGoodEndpoint = endpoints[(i + 1) % endpoints.length];
+						}
+						if (!started && isLastEndpoint && requestAttempt < MAX_RETRIES + 1) {
+							endpoints.push(endpoints[0]);
+							continue;
+						}
+					} else {
+						retryReason = error instanceof Error ? error.message : String(error);
+					}
 					const status = extractHttpStatusFromError(error);
 					if (
 						!isLastEndpoint &&
@@ -1264,6 +1284,8 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 						continue;
 					}
 					throw error;
+				} finally {
+					activeWatchdog?.clear();
 				}
 			}
 

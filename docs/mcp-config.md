@@ -96,6 +96,8 @@ Top-level keys:
 - `disabledServers` — active-profile user denylist; it hides a discovered server by name regardless of the source entry's `enabled` value
 - `enabledServers` — active-profile user allowlist; it can force-enable a same-named entry whose source says `enabled: false`, but `disabledServers` still wins
 
+To skip MCP for one process without touching any of these lists, launch it with `--no-mcp` or `OMP_NO_MCP=1`: that process discovers no MCP config, starts no server and registers no MCP tools, while other omp processes keep their servers.
+
 The config writer accepts names up to 100 characters containing letters, numbers, `_`, `-`, `.`, `:`, and single spaces between non-space name segments. The bundled schema omits colons and spaces from its name pattern, so names such as `cloudflare:cloudflare-api` or `MaaS Slack` may be valid at runtime while an editor reports a schema error.
 
 ## Supported server fields

@@ -40,6 +40,7 @@ import {
 	refreshStoredManagedMcpOAuthCredential,
 } from "./oauth-credentials";
 import type { MCPStoredOAuthCredential } from "./oauth-flow";
+import { isMCPDisabledForProcess } from "./process-opt-out";
 import type { McpConnectionStatusEvent } from "./startup-events";
 import { resolveMCPStartupTimeoutMs } from "./timeout";
 
@@ -755,6 +756,8 @@ export class MCPManager implements MCPManagerApi {
 
 	async #discoverAndConnect(options?: MCPDiscoverOptions): Promise<MCPLoadResult> {
 		this.#discoverOptions = options ? { ...options } : undefined;
+		// An opted-out process reads no MCP config at all, not just skips the connects.
+		if (isMCPDisabledForProcess()) return { tools: [], errors: new Map(), connectedServers: [], exaApiKeys: [] };
 		let loadedConfigs: LoadMCPConfigsResult;
 		try {
 			loadedConfigs = await this.loadConfigs(this.cwd, {
