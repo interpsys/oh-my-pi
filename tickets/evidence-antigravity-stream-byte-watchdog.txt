@@ -118,3 +118,81 @@ observations, not by this successful control.
 Local artifacts: /Users/compoooter/tmp/antigravity-watchdog-artifacts/
 carbon-run-receipt.json, carbon-wire.jsonl, carbon-stdout.txt, carbon-stderr.txt.
 The original session and running omp processes were not modified or restarted.
+
+FINAL PRE-LANDING CHECK RECEIPTS
+
+Final stream/utility rerun: 87 pass, 0 fail, including Carbon's preserved
+146-second silent-start control and 300-second provider-default deadline.
+MCP process opt-out real stdio fixture: 15 pass, 0 fail across default/flag/env
+print, RPC and deferred-UI startup, plus late explicit-connect rejection.
+Together with retry/session/settings/build-info suites: 338 pass, 0 fail.
+Initial root bun check found two test-only implicit-any callback parameters;
+fixed by typing the borrowed content array (no behavioral change).
+Updated root check: check:ts completed successfully in 12.08s; coding-agent
+4,898 files checked with no type errors. Oxlint: 15 workspace warnings, zero
+errors; changed-file oxlint previously zero diagnostics across 25 TS files.
+Oxfmt: all 6,754 files passed; changed-file check passed all 25 TS files.
+Full root bun check is NOT green: unrelated Rust check ran because no main
+refs were fetched, hit opusic-sys CMake failure (Ninja unavailable), then was
+manually canceled by the lead after completed TS/lint/format receipts were
+harvested. No Rust file changed in this fix. No numeric final exit captured;
+root script terminated by SIGTERM. This is a recorded deployment/check
+limitation, not a suppressed error or an automatic stall stop.
+Logs: final-stream-tests.log, final-mcp-tests.log, final-oxlint.log,
+final-oxfmt.log, final-bun-check.log and final-bun-check-after-types.log under
+/Users/compoooter/tmp/antigravity-watchdog-artifacts/.
+
+PR https://github.com/interpsys/oh-my-pi/pull/21 merged via gh pr merge --auto
+--merge to orb/v18.18.5. Resolving merge:
+ca8568bb1e8dd7923dd15e8b7bbebc3b41c391b2.
+Applicable CI observation: statusCheckRollup=[] and mergeStateStatus=CLEAN on
+the release-line PR; no release-line checks/required merge-queue gate ran.
+Do not describe this as green CI. Local behavioral and TS/lint/format checks
+are the executed verification; installed-binary smoke follows below.
+
+BUILD / INSTALL / LIVE SURFACE RECEIPTS
+
+Built the resolving merge exactly with:
+RELEASE_TARGETS=darwin-arm64 bun run ci:release:build-binaries
+Exit 0, 30.31 s. Native SDK addon version 18.18.5; macOS arm64 target only.
+codesign --verify --verbose: valid on disk; satisfies Designated Requirement.
+Built and installed --version:
+omp/18.18.5 (orb.7 ca8568b)
+Built and installed SHA256:
+fcb1998d8f0311a163a9893d56ad6561cdbe9c31de3ffc102b977dabc97e8187
+Installed path: /Users/compoooter/.local/share/omp/bin/omp
+Manager preserved existing {"manager":"manual","name":"..."} format and records
+release, resolving source SHA, binary SHA256 and both rollback paths.
+Rollback binary: /Users/compoooter/.local/share/omp/bin/omp.pre-orb7-backup
+Rollback manifest: /Users/compoooter/.local/share/omp/manager.pre-orb7-backup.json
+Rollback binary SHA256:
+b18af5b64f5fd9a45325b5c7bff46f18e033db118da6cf970b73e7a9d3d18fe1
+Binary replacement used a new file plus atomic rename; no running omp process
+was restarted. No affected old release pin occurs in WORK-ITEMS.md or
+COMPOSITION.md; manager.json is the installed manual-release surface.
+
+Installed --help includes:
+--no-mcp  Skip MCP for this process: no server discovery, startup, or MCP tools;
+settings and mcp.json stay untouched (also OMP_NO_MCP=1).
+
+Live smoke from /tmp, exit 0, combined 21.93 s:
+/Users/compoooter/.local/share/omp/bin/omp -p --model google-antigravity/gemini-4-carbon 'Reply with WATCHDOG_OK only.'
+stdout: Working... / WATCHDOG_OK
+OMP_NO_MCP=1 /Users/compoooter/.local/share/omp/bin/omp -p --model google-antigravity/gemini-4-carbon 'Reply with NO_MCP_OK only.'
+stdout: Working... / NO_MCP_OK
+Default startup and process opt-out both preserve successful live Carbon output.
+
+Parent-only restart command (NOT executed):
+exec /Users/compoooter/.local/share/omp/bin/omp --resume /Users/compoooter/.omp/agent/sessions/-tmp/2026-11-12T07-59-01-284Z_01a1cec4-6aa4-7447-a546-d63ad71f069c.jsonl
+
+RELEASE / NATIVE CLOSURE
+
+Published release v18.18.5-orb.7 at resolving merge with macOS arm64 binary
+and SHA256SUMS (other platforms intentionally not rebuilt):
+https://github.com/interpsys/oh-my-pi/releases/tag/v18.18.5-orb.7
+Native orb ticket close returned DONE for both
+TICKET-harness-antigravity-stream-byte-watchdog and
+TICKET-harness-process-no-mcp, resolving SHA
+ca8568bb1e8dd7923dd15e8b7bbebc3b41c391b2.
+Each close call records release, controls, installed-binary help/smoke evidence;
+the defect also records binary SHA256 and check/deployment limitations.
