@@ -319,8 +319,9 @@ export type TaskEffort = (typeof TASK_EFFORTS)[number];
  * `lo` = lowest supported level, `hi` = highest (whatever the model tops out
  * at — high, xhigh, or max), `med` = the supplied role default, not the range
  * midpoint. Without a model, endpoints use the full canonical range.
- * Returns `undefined` when the model has no controllable effort surface, so
- * callers fall back to their default selector (e.g. `auto`). Throws when the
+ * Returns `undefined` when the model has no controllable effort surface, or
+ * for `med` without a role default, so callers fall back to their default
+ * selector (e.g. `auto`, or the session's startup default). Throws when the
  * configured ceiling is below the model's lowest supported effort.
  */
 export function resolveTaskEffortLevel(

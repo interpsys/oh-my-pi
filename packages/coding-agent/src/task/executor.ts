@@ -4844,14 +4844,11 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					? clampThinkingLevelToCeiling(model, resolvedThinkingLevel, spawnEffortCeiling)
 					: resolvedThinkingLevel;
 			const defaultLevel = explicitThinkingLevel ? explicitLevel : (thinkingLevel ?? resolvedThinkingLevel);
+			// With no role selector, med stays undefined so SDK startup resolves the
+			// same model/settings default as omission; the ceiling still rides along.
 			const effortLevel =
 				options.effort !== undefined
-					? resolveTaskEffortLevel(
-							model,
-							options.effort,
-							spawnEffortCeiling,
-							defaultLevel ?? cfgDefaultThinkingLevel.get(subagentSettings),
-						)
+					? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling, defaultLevel)
 					: undefined;
 			if (model) {
 				const displayLevel = effortLevel ?? (explicitThinkingLevel ? explicitLevel : undefined);

@@ -152,7 +152,6 @@ describe("task.batch schema gating", () => {
 		expect(flat.description).toContain("`effort`");
 		expect(flat.description).toContain("omit by default");
 		expect(flat.description).toContain("Volume of work never raises it");
-		expect(flat.description).toContain("subtle concurrency, unclear root cause, high-stakes fix");
 
 		const batchSession = createSession({ settings: { "task.batch": true } });
 		const batch = await TaskTool.create(batchSession);

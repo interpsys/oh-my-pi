@@ -32,12 +32,7 @@ import { createSessionDefaults } from "../helpers/session-defaults";
 import { manyToolName } from "../fixtures/many-tools-mcp";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 
-import {
-	cfgDefaultThinkingLevel,
-	cfgTierAnthropic,
-	cfgTierGoogle,
-	cfgTierOpenai,
-} from "@oh-my-pi/pi-coding-agent/session/settings";
+import { cfgTierAnthropic, cfgTierGoogle, cfgTierOpenai } from "@oh-my-pi/pi-coding-agent/session/settings";
 
 function createMockSession(
 	onPrompt: (params: { emit: (event: AgentSessionEvent) => void }) => void | Promise<void>,
@@ -518,7 +513,6 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 			expected: Effort.Medium,
 		},
 		{ name: "frontmatter beats snapshot", thinkingLevel: ThinkingLevel.Low, expected: Effort.Low },
-		{ name: "snapshot default", expected: Effort.XHigh },
 		{ name: "auto frontmatter", thinkingLevel: "auto" as const, expected: "auto" },
 		{ name: "off frontmatter", thinkingLevel: ThinkingLevel.Off, expected: ThinkingLevel.Off },
 	])("med preserves $name just like an omitted hint", async ({ modelOverride, thinkingLevel, expected }) => {
@@ -540,10 +534,7 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 				modelRegistry: createModelRegistry(model),
 			});
 			expect(result.exitCode).toBe(0);
-			const forwarded = spy.mock.calls.at(-1)?.[0];
-			expect(
-				forwarded?.thinkingLevel ?? (forwarded?.settings && cfgDefaultThinkingLevel.get(forwarded.settings)),
-			).toBe(expected);
+			expect(spy.mock.calls.at(-1)?.[0]?.thinkingLevel).toBe(expected);
 			if (effort === "med") expect(result.resolvedThinkingLevel).toBe(expected);
 		}
 	});
