@@ -44,6 +44,16 @@ class "openai" {
 		thinking-efforts "low" "medium" "high" "xhigh" "max"
 		requires-reasoning-off-juice-instruction #true
 	}
+	// residue: orb fork policy (2026-11-09): Terra tops out at xhigh on every
+	// host, so `max` is never a selectable effort for it. A glob, not a rank,
+	// because the cap covers every Terra generation and SKU (`-pro`, `:batch`,
+	// Codex `-wm`, `gpt-terra-latest`, vendor-prefixed and separator-collapsed
+	// aggregator ids), not whole revisions. A ceiling, not `thinking-efforts`,
+	// because discovered ladders (OpenRouter's `supported_efforts`) win over
+	// rule ladders but not over the ceiling.
+	models "*terra*" {
+		thinking-max-effort "xhigh"
+	}
 	// Delegation appetite is a lineage trait. GPT-5.6 was trained on Codex's
 	// "no subagents unless asked" developer message; GPT-6 fans out on its own
 	// and over-delegates under Claude-calibrated prompts (reflexive scouts,

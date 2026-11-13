@@ -332,6 +332,12 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	"thinking-effort-budgets": { key: "effortBudgets", set: "thinking", shape: "object" },
 	"thinking-effort-map": { key: "effortMap", set: "thinking", shape: "object" },
 	"thinking-efforts": { key: "efforts", set: "thinking", shape: "array", values: EFFORTS, emptyArray: true },
+	/**
+	 * Ceiling on the resolved ladder, whichever layer supplied it (rule,
+	 * explicit spec, discovery advertisement, cached row): tiers above it are
+	 * dropped, so a host advertising more never widens the dial.
+	 */
+	"thinking-max-effort": { key: "maxEffort", set: "thinking", shape: "scalar", values: EFFORTS },
 	"thinking-mode": {
 		key: "mode",
 		set: "thinking",
