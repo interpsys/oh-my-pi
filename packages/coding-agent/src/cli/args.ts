@@ -86,6 +86,8 @@ export interface Args {
 	extensions?: string[];
 	trustedExtensions?: string[];
 	noExtensions?: boolean;
+	/** `--no-mcp`: process-only MCP opt-out (no config discovery, server startup or MCP tools). */
+	noMcp?: boolean;
 	pluginDirs?: string[];
 	print?: boolean;
 	printThoughts?: boolean;
@@ -388,6 +390,8 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.printThoughts = true;
 		} else if (arg === "--no-extensions") {
 			result.noExtensions = true;
+		} else if (arg === "--no-mcp") {
+			result.noMcp = true;
 		} else if (arg === "--no-skills") {
 			result.noSkills = true;
 		} else if (arg === "--no-rules") {

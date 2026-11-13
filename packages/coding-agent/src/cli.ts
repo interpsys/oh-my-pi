@@ -29,6 +29,7 @@ import {
 
 import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from "@oh-my-pi/pi-utils/worker-host";
 import { installSqliteLockShim } from "@oh-my-pi/pi-natives/sqlite-locks";
+import { BUILD_VERSION } from "./build-info";
 import { isNativeShell, runNativeShell } from "./cli/native-shell";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
 import {
@@ -90,6 +91,7 @@ function getWorkerParentPort(): MessagePort | null {
 const PREPAINT_SAFE_FLAGS: Record<string, true> = {
 	"--no-session": true,
 	"--no-extensions": true,
+	"--no-mcp": true,
 	"--no-skills": true,
 	"--no-rules": true,
 	"--no-context-files": true,
@@ -600,7 +602,7 @@ export async function runCli(argv: string[]): Promise<void> {
 			return;
 		}
 		runningCommand = resolved.argv[0];
-		await run({ bin: APP_NAME, version: VERSION, argv: resolved.argv, commands, metadataHelp: showHelp });
+		await run({ bin: APP_NAME, version: BUILD_VERSION, argv: resolved.argv, commands, metadataHelp: showHelp });
 	} finally {
 		stopStartupComposer?.();
 	}
