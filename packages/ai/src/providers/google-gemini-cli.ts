@@ -13,7 +13,7 @@ import {
 	getAntigravityModelWireProfile,
 	getGeminiCliHeaders,
 } from "@oh-my-pi/pi-catalog/wire/gemini-headers";
-import { extractHttpStatusFromError, fetchWithRetry, logger, readSseJson } from "@oh-my-pi/pi-utils";
+import { extractHttpStatusFromError, fetchWithRetry, readSseJson } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import { oauthAccountKey } from "../auth/types";
 import type {
@@ -27,7 +27,6 @@ import type {
 	StreamOptions,
 	TextContent,
 	ThinkingContent,
-	Tool,
 	ToolCall,
 } from "../types";
 import { normalizeSystemPrompts } from "../utils";
@@ -42,10 +41,9 @@ import {
 	type RawHttpRequestDump,
 } from "../utils/http-inspector";
 import { getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs } from "../utils/idle-iterator";
-import { armStreamByteWatchdog, type StreamByteWatchdog } from "../utils/stream-byte-watchdog";
 // Refresh is the sole responsibility of AuthStorage (broker-aware, single-flighted);
 // the stream provider trusts the access token threaded through `options.apiKey`.
-import { normalizeSchemaForAntigravityGemini, normalizeSchemaForCCA, toolWireSchema } from "../utils/schema";
+import { normalizeSchemaForCCA } from "../utils/schema";
 import { StreamMarkupHealing, type StreamMarkupHealingEvent } from "../utils/stream-markup-healing";
 import { prepareAnthropicImageContext } from "./anthropic-images";
 import forcedToolDirective from "./google-antigravity-forced-tool.md" with { type: "text" };
@@ -285,18 +283,6 @@ export interface GoogleGeminiCliOptions extends StreamOptions {
 	projectId?: string;
 	/** Antigravity endpoint routing mode: "auto" (default with failover), "production", "sandbox". */
 	antigravityEndpointMode?: "auto" | "production" | "sandbox";
-	/**
-	 * google-antigravity Gemini only: encode the request like the official
-	 * Antigravity 2.31.2 client. Every real thought signature replays (the
-	 * bypass sentinel only on an unsigned first call), unsigned thought
-	 * summaries are dropped, function calls and responses carry part ids with
-	 * each response its own `model`-role content in call order, the body carries
-	 * `requestType: "agent"` and no `toolConfig` (a forced choice keeps its
-	 * transcript directive), and each tool declaration is its own `tools` entry
-	 * in Google Schema encoding. Other routes, including Antigravity Claude,
-	 * ignore it.
-	 */
-	antigravityRequestParity?: boolean;
 	providerSessionState?: Map<string, ProviderSessionState>;
 	/** Optional override directory for empty-response diagnostic dumps (used in isolated tests). */
 	emptyResponseDumpDir?: string;
@@ -304,6 +290,8 @@ export interface GoogleGeminiCliOptions extends StreamOptions {
 
 export interface AntigravityProviderSessionState extends ProviderSessionState {
 	lastGoodEndpoint?: string;
+	/** A stream timed out: skip pooled keep-alive sockets until a request succeeds. */
+	freshConnection?: boolean;
 	/**
 	 * Per-conversation request-envelope identity that mirrors the real
 	 * Antigravity client. `sessionId` is the signed-decimal session id;
@@ -344,8 +332,6 @@ const ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
 const ANTIGRAVITY_ENDPOINT_FALLBACKS = [ANTIGRAVITY_DAILY_ENDPOINT, ANTIGRAVITY_SANDBOX_ENDPOINT] as const;
 
-// Runtime-only: a process restart already discards the old connection pool.
-const FRESH_CONNECTION_SESSIONS = new WeakSet<Map<string, ProviderSessionState>>();
 // Retry configuration
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
@@ -354,6 +340,56 @@ const RATE_LIMIT_BUDGET_MS = 5 * 60 * 1000;
 const CLAUDE_THINKING_BETA_HEADER = "interleaved-thinking-2025-05-14";
 const GOOGLE_GEMINI_REFRESH_SKEW_MS = 60_000;
 const ANTIGRAVITY_REFRESH_SKEW_MS = 60_000;
+
+interface ByteWatchdog {
+	/** Caller signal merged with the watchdog; covers the fetch and the body read. */
+	readonly signal: AbortSignal;
+	onBytes(byteLength: number): void;
+	clear(): void;
+	/** The timeout message when silence, not the caller, aborted the request. */
+	readonly timedOut: string | undefined;
+}
+
+/**
+ * Aborts one physical request when the response goes silent: `firstByteMs`
+ * through headers until the first body chunk, then `idleMs` between chunks.
+ * Raw bytes count, so thinking, SSE comments and partial frames keep a slow
+ * stream alive (cold reasoning starts can exceed two minutes). A missing or
+ * non-positive budget disables that phase.
+ */
+function armByteWatchdog(callerSignal: AbortSignal | undefined, firstByteMs?: number, idleMs?: number): ByteWatchdog {
+	const controller = new AbortController();
+	let timer: NodeJS.Timeout | undefined;
+	let sawBytes = false;
+	const arm = (ms: number | undefined): void => {
+		clearTimeout(timer);
+		timer = undefined;
+		if (!ms || ms <= 0) return;
+		timer = setTimeout(() => {
+			const phase = sawBytes ? "between response bytes" : "before the first response byte";
+			controller.abort(new AIError.StreamTimeoutError(`stream silent for ${ms}ms ${phase}`));
+		}, ms);
+		timer.unref?.();
+	};
+	arm(firstByteMs);
+	return {
+		signal: callerSignal ? AbortSignal.any([callerSignal, controller.signal]) : controller.signal,
+		onBytes(byteLength: number): void {
+			if (byteLength === 0) return;
+			if (sawBytes) {
+				timer?.refresh();
+				return;
+			}
+			sawBytes = true;
+			arm(idleMs);
+		},
+		clear: () => arm(undefined),
+		get timedOut(): string | undefined {
+			if (!controller.signal.aborted || callerSignal?.aborted) return undefined;
+			return (controller.signal.reason as Error).message;
+		},
+	};
+}
 
 const optionalCredentialString = type("unknown").pipe(raw => {
 	const out = type("string")(raw);
@@ -650,24 +686,17 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				headers: requestHeaders,
 			};
 
-			// Cold reasoning starts can legitimately exceed two minutes. Watch raw
-			// bytes, not parsed events, with independent configurable phase budgets.
+			// Raw-byte budgets for each physical request; see armByteWatchdog.
 			const firstEventTimeoutMs =
 				options?.streamFirstEventTimeoutMs ??
 				getStreamFirstEventTimeoutMs(
 					undefined,
-					model.compat?.streamFirstEventTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS,
+					model.compat.streamFirstEventTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS,
 				);
 			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs(DEFAULT_STREAM_TIMEOUT_MS);
 			const callerSignal = options?.signal;
-			let activeWatchdog: StreamByteWatchdog | undefined;
-			let freshConnection = options?.providerSessionState
-				? FRESH_CONNECTION_SESSIONS.has(options.providerSessionState)
-				: false;
-			let responseBytes = 0;
-			let requestAttempt = 0;
-			let retryReason = "initial request";
-			let retryFinishReason: string | undefined;
+			let freshConnection = providerState?.freshConnection === true;
+			let watchdog: ByteWatchdog | undefined;
 			const fetchResponse = (endpoint: string, maxAttempts: number): Promise<Response> =>
 				fetchWithRetry(`${endpoint}/v1internal:streamGenerateContent?alt=sse`, {
 					method: "POST",
@@ -678,48 +707,16 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					defaultDelayMs: attempt => BASE_DELAY_MS * 2 ** attempt,
 					maxDelayMs: options?.maxRetryDelayMs ?? RATE_LIMIT_BUDGET_MS,
 					timeout: false,
-					shouldRetryResponse: (response, bodyText) => {
-						responseBytes = Buffer.byteLength(bodyText);
-						retryReason = `HTTP ${response.status}`;
-						return true;
-					},
-					// HTTP 429/5xx and network errors retry on the last endpoint; a byte
-					// timeout leaves the endpoint after this one request.
-					shouldRetryError: error => !(error instanceof AIError.StreamTimeoutError),
-					fetch: async (input, init) => {
-						activeWatchdog?.clear();
-						if (requestAttempt > 0) {
-							logger.warn("Cloud Code Assist request retry", {
-								reason: retryReason,
-								endpoint,
-								attempt: requestAttempt + 1,
-								elapsedMs: performance.now() - startTime,
-								responseBytes,
-								finishReason: retryFinishReason ?? null,
-								freshConnection,
-							});
-						}
-						requestAttempt += 1;
-						responseBytes = 0;
-						const watchdog = armStreamByteWatchdog(callerSignal, firstEventTimeoutMs, idleTimeoutMs, endpoint);
-						activeWatchdog = watchdog;
-						try {
-							return await watchdog.run(
-								(options?.fetch ?? fetch)(input, {
-									...init,
-									signal: watchdog.signal,
-									...(freshConnection ? { keepalive: false } : {}),
-								}),
-							);
-						} catch (error) {
-							retryReason = watchdog.error ? "stream first-byte timeout" : "network error";
-							if (watchdog.error) {
-								freshConnection = true;
-								if (options?.providerSessionState) FRESH_CONNECTION_SESSIONS.add(options.providerSessionState);
-							}
-							watchdog.clear();
-							throw error;
-						}
+					// HTTP 429/5xx and network errors retry here; a timed-out request leaves the endpoint.
+					shouldRetryError: () => !watchdog?.timedOut,
+					fetch: (input, init) => {
+						watchdog?.clear();
+						watchdog = armByteWatchdog(callerSignal, firstEventTimeoutMs, idleTimeoutMs);
+						return (options?.fetch ?? fetch)(input, {
+							...init,
+							signal: watchdog.signal,
+							...(freshConnection && { keepalive: false }),
+						});
 					},
 				});
 			const toolNames = new Set(context.tools?.map(t => t.name) ?? []);
@@ -896,7 +893,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					}
 				};
 
-				const responseSignal = activeWatchdog?.signal ?? callerSignal;
+				const responseSignal = watchdog?.signal ?? callerSignal;
 				const onSseEvent = options?.onSseEvent;
 				// The byte observer runs before SSE framing, so thinking, comments and
 				// partial JSON keep the transport alive without visible output.
@@ -927,10 +924,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 							raw: rawLines,
 						});
 					},
-					byteLength => {
-						responseBytes += byteLength;
-						activeWatchdog?.onBytes(byteLength);
-					},
+					byteLength => watchdog?.onBytes(byteLength),
 				);
 				for await (const chunk of chunks) {
 					if (captureActive && capturedRawChunks.length < RAW_EMPTY_RESPONSE_MAX_EVENTS && !capturedTruncated) {
@@ -1115,7 +1109,6 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					if (!response.ok) {
 						if (AIError.isTransientStatus(response.status)) {
 							if (!isLastEndpoint) {
-								retryReason = `HTTP ${response.status}`;
 								continue;
 							}
 						}
@@ -1135,61 +1128,29 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 						);
 					}
 
-					const requestUrl = response.url;
-					const currentResponse = response;
-					let lastEmptyCapture:
-						| {
-								status: number;
-								url: string;
-								headers: Record<string, string>;
-								events: RawEmptyResponseSseEvent[];
-								chunks: unknown[];
-								truncated: boolean;
-								omittedEvents: number;
-								omittedBytes: number;
-						  }
-						| undefined;
-
 					// Never repeat an identical prompt after a complete empty response.
 					// Try the alternate endpoint once, then let session recovery append
 					// its bounded continuation reminder before sending another request.
-					const streamed = await activeWatchdog!.run(streamResponse(currentResponse)).finally(async () => {
-						activeWatchdog?.clear();
-						// Injected transports may not cancel an unconsumed body when
-						// their signal aborts before the SSE reader takes its lock.
-						if (activeWatchdog?.signal.aborted && !currentResponse.body?.locked) {
-							await currentResponse.body?.cancel().catch(() => {});
-						}
-					});
-					retryFinishReason = lastFinishReason;
+					const streamed = await streamResponse(response);
 					const thoughtOnly = hasThinkingOutput();
 					const acceptedSilence =
 						options?.acceptEmptyResponse === true &&
 						!streamed.strippedPlanningLeak &&
 						(isLastEndpoint || thoughtOnly);
 					receivedContent = streamed.meaningful || acceptedSilence;
-					if (!receivedContent && !thoughtOnly) {
-						lastEmptyCapture = {
-							status: currentResponse.status,
-							url: currentResponse.url || requestUrl || `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
-							headers: Object.fromEntries(currentResponse.headers.entries()),
-							events: streamed.capturedRawEvents,
-							chunks: streamed.capturedRawChunks,
-							truncated: streamed.capturedTruncated,
-							omittedEvents: streamed.capturedOmittedEvents,
-							omittedBytes: streamed.capturedOmittedBytes,
-						};
-						logger.warn("Cloud Code Assist returned empty output", {
-							reason: "empty STOP response",
-							endpoint,
-							attempt: requestAttempt,
-							elapsedMs: performance.now() - startTime,
-							responseBytes,
-							finishReason: lastFinishReason ?? null,
-							candidateCount,
-							nextAction: isLastEndpoint ? "surface error to session recovery" : "try alternate endpoint once",
-						});
-					}
+					const lastEmptyCapture =
+						receivedContent || thoughtOnly
+							? undefined
+							: {
+									status: response.status,
+									url: response.url || `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
+									headers: Object.fromEntries(response.headers.entries()),
+									events: streamed.capturedRawEvents,
+									chunks: streamed.capturedRawChunks,
+									truncated: streamed.capturedTruncated,
+									omittedEvents: streamed.capturedOmittedEvents,
+									omittedBytes: streamed.capturedOmittedBytes,
+								};
 
 					if (output.stopReason === "aborted" || output.stopReason === "error") {
 						throw new AIError.ProviderResponseError(output.errorMessage ?? "An unknown error occurred", {
@@ -1205,9 +1166,6 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 							: "Cloud Code Assist API returned an empty response";
 						const diagnostics = JSON.stringify({
 							endpoint,
-							attempt: requestAttempt,
-							elapsedMs: performance.now() - startTime,
-							responseBytes,
 							candidates: candidateCount,
 							finishReason: lastFinishReason ?? null,
 							promptFeedback: lastPromptFeedback ?? null,
@@ -1265,50 +1223,30 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					) {
 						providerState.lastGoodEndpoint = endpoint;
 					}
-					if (options?.providerSessionState) FRESH_CONNECTION_SESSIONS.delete(options.providerSessionState);
 					// Commit after a fully successful attempt (content + finish reason);
 					// used as the next request's last_execution_id. Overwrite even when
 					// undefined so a response without an id can't leave a stale value.
 					if (providerState) {
 						providerState.lastExecutionId = lastResponseId;
+						providerState.freshConnection = false;
 					}
 					break;
 				} catch (error) {
-					if (error instanceof AIError.StreamTimeoutError) {
+					const timeout = watchdog?.timedOut;
+					if (timeout) {
 						freshConnection = true;
-						if (options?.providerSessionState) FRESH_CONNECTION_SESSIONS.add(options.providerSessionState);
-						retryReason = "stream byte timeout";
-						if (providerState) {
-							if (endpoints.length > 1) providerState.lastGoodEndpoint = endpoints[(i + 1) % endpoints.length];
-						}
-						// Before output, visit each endpoint once. After output, do not
-						// replay committed deltas on another endpoint. Both paths must
-						// bypass the session's unchanged-body retry: empty/thought-only
-						// turns continue with a changed prompt; partial answers fall back.
-						if (started || isLastEndpoint) {
-							const silence = responseBytes === 0 ? "first-byte" : "idle";
-							const diagnostics = JSON.stringify({
-								endpoint,
-								attempt: requestAttempt,
-								elapsedMs: performance.now() - startTime,
-								responseBytes,
-								silence,
-								silenceBudgetMs: silence === "first-byte" ? firstEventTimeoutMs : idleTimeoutMs,
-							});
-							const responseKind = output.content.some(
-								block =>
-									(block.type === "text" && block.text.trim().length > 0) ||
-									(block.type === "toolCall" && block.name.trim().length > 0),
-							)
-								? "incomplete"
-								: "empty";
-							throw new AIError.ProviderResponseError(
-								`Cloud Code Assist API returned an ${responseKind} response: ${diagnostics}`,
-								{ provider: model.provider, kind: "output" },
-							);
-						}
-					} else {
-						retryReason = error instanceof Error ? error.message : String(error);
+						if (providerState) providerState.freshConnection = true;
+						// Before output, try the next endpoint once on a fresh connection.
+						// Never resend this body otherwise: session recovery continues an
+						// empty turn with a changed prompt instead.
+						if (!started && !isLastEndpoint) continue;
+						const visible = output.content.some(
+							block => (block.type === "text" && block.text.trim().length > 0) || block.type === "toolCall",
+						);
+						throw new AIError.ProviderResponseError(
+							`Cloud Code Assist API returned an ${visible ? "incomplete" : "empty"} response: ${timeout} (${endpoint})`,
+							{ provider: model.provider, kind: "output" },
+						);
 					}
 					const status = extractHttpStatusFromError(error);
 					if (
@@ -1323,7 +1261,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					}
 					throw error;
 				} finally {
-					activeWatchdog?.clear();
+					watchdog?.clear();
 				}
 			}
 
@@ -1437,22 +1375,6 @@ function normalizeAntigravityTools(
 	}));
 }
 
-/**
- * The official Antigravity client's tool packing: one `tools` entry per
- * declaration, its schema on `parameters` in Google Schema proto encoding.
- */
-function convertAntigravityParityTools(tools: Tool[]): CloudCodeAssistRequest["request"]["tools"] {
-	return tools.map(tool => ({
-		functionDeclarations: [
-			{
-				name: tool.name,
-				description: tool.description || "",
-				parameters: normalizeSchemaForAntigravityGemini(toolWireSchema(tool)),
-			},
-		],
-	}));
-}
-
 interface AntigravityRequestEnvelope {
 	sessionId: string;
 	requestId: string;
@@ -1519,26 +1441,10 @@ export function buildRequest(
 	accountKey?: string,
 ): CloudCodeAssistRequest {
 	const systemPrompts = normalizeSystemPrompts(context.systemPrompt);
-	// Antigravity's Gemini routes reject some replayed thought signatures with a
-	// bare `400 INVALID_ARGUMENT` ("Request contains an invalid argument.") once
-	// the request's current turn holds a signed model step. The rejected
-	// signatures sit on steps that open a turn: after user text or images (a
-	// prompt, a compaction summary, an injected clock or reminder), not after
-	// function responses alone. Which such signature fails depends on the exact
-	// text before it (re-timestamping one injected clock line turns a failing
-	// captured body into a 200), so no narrower request-shape rule predicts it.
-	// Captured failing bodies all succeed with those steps unsigned; tool-loop
-	// steps keep their signatures, so the reasoning chain across consecutive
-	// tool calls survives.
-	// `antigravityRequestParity` instead encodes Antigravity Gemini requests like
-	// four captured official 2.31.2 bodies, which replay every real signature;
-	// it stays off by default until a live A/B against this workaround passes.
-	const officialParity =
-		isAntigravity && model.identity.class === "gemini" && options.antigravityRequestParity === true;
-	const contents = convertMessages(model, context, {
-		unsignedTurnOpeningSteps: isAntigravity && model.identity.class === "gemini" && !officialParity,
-		antigravityRequestParity: officialParity,
-	});
+	// Antigravity Gemini replays every real thought signature, like the official
+	// client: stripping the ones on turn-opening steps made Carbon answer with
+	// signature-only empty streams.
+	const contents = convertMessages(model, context);
 	const generationConfig: CloudCodeAssistRequest["request"]["generationConfig"] = {};
 	if (options.temperature !== undefined) {
 		generationConfig.temperature = options.temperature;
@@ -1595,23 +1501,19 @@ export function buildRequest(
 	}
 
 	if (context.tools && context.tools.length > 0) {
-		request.tools = officialParity
-			? convertAntigravityParityTools(context.tools)
-			: isAntigravity
-				? normalizeAntigravityTools(convertTools(context.tools, model))
-				: convertTools(context.tools, model);
-		let toolConfig: CloudCodeAssistRequest["request"]["toolConfig"];
+		const convertedTools = convertTools(context.tools, model);
+		request.tools = isAntigravity ? normalizeAntigravityTools(convertedTools) : convertedTools;
 		if (options.toolChoice) {
 			const choice = options.toolChoice;
 			if (typeof choice === "string") {
 				const mode = mapToolChoice(choice);
 				if (mode !== "AUTO") {
-					toolConfig = {
+					request.toolConfig = {
 						functionCallingConfig: { mode },
 					};
 				}
 			} else {
-				toolConfig = {
+				request.toolConfig = {
 					functionCallingConfig: {
 						mode: "ANY",
 						allowedFunctionNames: [...choice.allowedFunctionNames],
@@ -1625,21 +1527,18 @@ export function buildRequest(
 			if (
 				isAntigravity &&
 				model.identity.class !== "anthropic" &&
-				toolConfig?.functionCallingConfig.mode === "ANY"
+				request.toolConfig?.functionCallingConfig.mode === "ANY"
 			) {
 				contents.push({ role: "user", parts: [{ text: forcedToolDirective }] });
 			}
 		}
 		// Antigravity's default tool mode is VALIDATED (verified for Gemini and
-		// Claude); an explicit non-auto tool choice above wins. The official
-		// client sends no `toolConfig` at all, so parity omits it; a forced
-		// choice still reaches the model through the directive above.
-		if (isAntigravity && !toolConfig) {
-			toolConfig = {
+		// Claude); an explicit non-auto tool choice above wins.
+		if (isAntigravity && !request.toolConfig) {
+			request.toolConfig = {
 				functionCallingConfig: { mode: "VALIDATED" as FunctionCallingConfigMode },
 			};
 		}
-		if (toolConfig && !officialParity) request.toolConfig = toolConfig;
 	}
 
 	// Claude on Antigravity always forces VALIDATED, even with no tools declared.
@@ -1701,7 +1600,6 @@ export function buildRequest(
 			request,
 			model: wireModelId,
 			userAgent: "antigravity",
-			...(officialParity && { requestType: "agent" }),
 		};
 	}
 

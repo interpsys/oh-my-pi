@@ -204,50 +204,13 @@ export class FunctionCallOrder {
 	}
 }
 
-/** Options for {@link convertMessages}. */
-export interface ConvertMessagesOptions {
-	/**
-	 * Replay a model step that opens a turn without its thought signatures, so
-	 * the transport's unsigned-call policy (the bypass sentinel on Cloud Code
-	 * Assist) applies to it. A step opens a turn unless the contents since the
-	 * previous model step are function responses alone.
-	 */
-	unsignedTurnOpeningSteps?: boolean;
-	/**
-	 * Encode history like the official Antigravity 2.31.2 client: the model's
-	 * own unsigned thinking is not replayed (signed parts keep their slot),
-	 * function calls and responses carry their part ids, and each function
-	 * response is its own `model`-role content, in call order, instead of one
-	 * merged user turn. Signatures follow the normal replay policy.
-	 */
-	antigravityRequestParity?: boolean;
-}
-
-/** Whether the user contents after the last model step hold anything but function responses. */
-function opensTurn(contents: readonly Content[]): boolean {
-	let sawFunctionResponse = false;
-	for (let index = contents.length - 1; index >= 0 && contents[index].role !== "model"; index--) {
-		for (const part of contents[index].parts ?? []) {
-			if (!part.functionResponse) return true;
-			sawFunctionResponse = true;
-		}
-	}
-	return !sawFunctionResponse;
-}
-
 /**
  * Convert internal messages to Gemini Content[] format.
  */
-export function convertMessages<T extends GoogleApiType>(
-	model: Model<T>,
-	context: Context,
-	options: ConvertMessagesOptions = {},
-): Content[] {
+export function convertMessages<T extends GoogleApiType>(model: Model<T>, context: Context): Content[] {
 	const contents: Content[] = [];
 	const emittedToolCallNames = new Map<string, string>();
 	const callOrder = new FunctionCallOrder();
-	const parity = options.antigravityRequestParity === true;
-	const includeFunctionPartIds = model.compat.supportsFunctionPartId || parity;
 
 	const transformedMessages = transformMessages(context.messages, model, id => normalizeToolCallId(id));
 
@@ -256,14 +219,7 @@ export function convertMessages<T extends GoogleApiType>(
 	// equal to number of function call parts"). Buffer image turns and flush them only after the
 	// merged functionResponse turn is complete, each result's images in its call's order.
 	let pendingToolImages: Array<{ ordinal: number | undefined; parts: Part[] }> = [];
-	// Parity: each function response is its own content; the run is pushed in call order.
-	let pendingResponseContents: Array<{ ordinal: number | undefined; content: Content }> = [];
-	const flushToolResults = () => {
-		if (pendingResponseContents.length > 0) {
-			sortKnownInPlace(pendingResponseContents, response => response.ordinal);
-			for (const response of pendingResponseContents) contents.push(response.content);
-			pendingResponseContents = [];
-		}
+	const flushPendingToolImages = () => {
 		if (pendingToolImages.length === 0) return;
 		sortKnownInPlace(pendingToolImages, group => group.ordinal);
 		contents.push({ role: "user", parts: pendingToolImages.flatMap(group => group.parts) });
@@ -271,7 +227,7 @@ export function convertMessages<T extends GoogleApiType>(
 	};
 
 	for (const msg of transformedMessages) {
-		if (msg.role !== "toolResult") flushToolResults();
+		if (msg.role !== "toolResult") flushPendingToolImages();
 		if (msg.role === "user" || msg.role === "developer") {
 			if (typeof msg.content === "string") {
 				// Skip empty user messages
@@ -308,8 +264,6 @@ export function convertMessages<T extends GoogleApiType>(
 			const parts: Part[] = [];
 			// Check if message is from same provider and model - only then keep thinking blocks
 			const isSameProviderAndModel = msg.provider === model.provider && msg.model === model.id;
-			const replaysSignatures =
-				isSameProviderAndModel && !(options.unsignedTurnOpeningSteps === true && opensTurn(contents));
 			const dropsUnsignedThinking = model.compat.dropUnsignedThinking;
 			let isFirstToolCall = true;
 
@@ -317,18 +271,16 @@ export function convertMessages<T extends GoogleApiType>(
 				if (block.type === "text") {
 					// Skip empty text blocks - they can cause issues with some models (e.g. Claude via Antigravity)
 					if (!block.text || block.text.trim() === "") continue;
-					const thoughtSignature = resolveThoughtSignature(replaysSignatures, block.textSignature);
+					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.textSignature);
 					parts.push({
 						text: block.text.toWellFormed(),
 						...(thoughtSignature && { thoughtSignature }),
 					});
 				} else if (block.type === "thinking") {
-					const thoughtSignature = resolveThoughtSignature(replaysSignatures, block.thinkingSignature);
+					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.thinkingSignature);
 					// Skip empty thinking unless it carries the signature of a signature-only thought part
 					if ((!block.thinking || block.thinking.trim() === "") && !thoughtSignature) continue;
 					if (dropsUnsignedThinking && !thoughtSignature) continue;
-					// The official Antigravity client omits the thought summaries it streamed.
-					if (parity && isSameProviderAndModel && !thoughtSignature) continue;
 					if (isSameProviderAndModel) {
 						// The model's own thinking replays in the thought slot even unsigned: Gemini
 						// signs the part after a thought summary, not the summary, and replayed as
@@ -351,7 +303,7 @@ export function convertMessages<T extends GoogleApiType>(
 					// Code Assist requires it only when the first call itself is unsigned;
 					// signed-first parallel turns must leave unsigned secondary calls bare.
 					// Vertex rejects the sentinel and receives neither fallback. (#9638, #10602)
-					const thoughtSignature = resolveThoughtSignature(replaysSignatures, block.thoughtSignature);
+					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.thoughtSignature);
 					const requiresFallback =
 						model.compat.requiresSkipThoughtSignature ||
 						(isFirstToolCall && model.compat.requiresSkipThoughtSignatureOnFirstFunctionCall);
@@ -365,7 +317,7 @@ export function convertMessages<T extends GoogleApiType>(
 						functionCall: {
 							name: block.name,
 							args: block.arguments ?? {},
-							...(includeFunctionPartIds ? { id: block.id } : {}),
+							...(model.compat.supportsFunctionPartId ? { id: block.id } : {}),
 						},
 					};
 					if (effectiveSignature) {
@@ -407,35 +359,28 @@ export function convertMessages<T extends GoogleApiType>(
 
 			const imageParts = imageContent.map(convertGoogleImagePart);
 
+			const includeId = model.compat.supportsFunctionPartId;
 			const emittedName = emittedToolCallNames.get(msg.toolCallId);
 			const functionResponsePart: Part = {
 				functionResponse: {
 					name: emittedName ?? msg.toolName,
 					response: msg.isError ? { error: responseValue } : { output: responseValue },
 					...(hasImages && modelSupportsMultimodalFunctionResponse && { parts: imageParts }),
-					...(includeFunctionPartIds ? { id: msg.toolCallId } : {}),
+					...(includeId ? { id: msg.toolCallId } : {}),
 				},
 			};
+			callOrder.response(functionResponsePart, msg.toolCallId);
 
-			if (parity) {
-				// The official Antigravity client sends each response as its own model-role content.
-				pendingResponseContents.push({
-					ordinal: callOrder.ordinal(msg.toolCallId),
-					content: { role: "model", parts: [functionResponsePart] },
-				});
+			// Cloud Code Assist API requires all function responses to be in a single user turn.
+			// Check if the last content is already a user turn with function responses and merge.
+			const lastContent = contents[contents.length - 1];
+			if (lastContent?.role === "user" && lastContent.parts?.some(p => p.functionResponse)) {
+				lastContent.parts.push(functionResponsePart);
 			} else {
-				callOrder.response(functionResponsePart, msg.toolCallId);
-				// Cloud Code Assist API requires all function responses to be in a single user turn.
-				// Check if the last content is already a user turn with function responses and merge.
-				const lastContent = contents[contents.length - 1];
-				if (lastContent?.role === "user" && lastContent.parts?.some(p => p.functionResponse)) {
-					lastContent.parts.push(functionResponsePart);
-				} else {
-					contents.push({
-						role: "user",
-						parts: [functionResponsePart],
-					});
-				}
+				contents.push({
+					role: "user",
+					parts: [functionResponsePart],
+				});
 			}
 
 			// For Gemini < 3, buffer images for a separate user message after the functionResponse turn
@@ -447,7 +392,7 @@ export function convertMessages<T extends GoogleApiType>(
 			}
 		}
 	}
-	flushToolResults();
+	flushPendingToolImages();
 	callOrder.apply(contents);
 
 	return contents;

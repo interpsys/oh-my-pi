@@ -796,14 +796,10 @@ export class TurnRecovery {
 			return undefined;
 		}
 
-		const errorMessage = message.errorMessage || "Unknown error";
 		const delayMs = calculateRetryBackoffDelayMs(cfgRetry.get(this.#host.settings).baseDelayMs, attempt);
 		logger.info("Antigravity failed the request before any output; continuing on the same model", {
 			rejection,
-			reason: errorMessage,
 			attempt,
-			maxAttempts: ANTIGRAVITY_REJECTION_MAX_RETRIES,
-			delayMs,
 			model: message.model,
 			provider: message.provider,
 		});
@@ -827,7 +823,7 @@ export class TurnRecovery {
 			attempt,
 			maxAttempts: ANTIGRAVITY_REJECTION_MAX_RETRIES,
 			delayMs,
-			errorMessage,
+			errorMessage: message.errorMessage || "Unknown error",
 			errorId: message.errorId,
 		});
 		this.#host.scheduleAgentContinue({
@@ -1302,19 +1298,11 @@ export class TurnRecovery {
 			attribution: "agent",
 			timestamp: Date.now(),
 		});
-		const reason = assistantMessage.errorMessage || "Assistant stopped without actionable output";
-		logger.info("Assistant returned no actionable output; continuing with reminder", {
-			reason,
-			attempt: this.#emptyStopRetryCount,
-			maxAttempts: EMPTY_STOP_MAX_RETRIES,
-			model: assistantMessage.model,
-			provider: assistantMessage.provider,
-		});
 		await this.#announceContinuationRetry({
 			attempt: this.#emptyStopRetryCount,
 			maxAttempts: EMPTY_STOP_MAX_RETRIES,
 			delayMs: 0,
-			errorMessage: reason,
+			errorMessage: assistantMessage.errorMessage || "Assistant stopped without actionable output",
 			errorId: assistantMessage.errorId,
 		});
 		this.#host.scheduleAgentContinue({
