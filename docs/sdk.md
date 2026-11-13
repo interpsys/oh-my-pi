@@ -36,6 +36,20 @@ The narrower `@oh-my-pi/pi-coding-agent/sdk` subpath exports `createAgentSession
 
 The injected `api.pi` in extensions, hooks, custom commands, and custom tools resolves the host SDK on first access. Registering callbacks or loading bundled commands does not eagerly load the full SDK and interactive composer.
 
+### Orb build identity
+
+`BUILD_INFO` is exported from the package root (and the injected host SDK) as
+`Readonly<{version: string; commit: string | null; variant: string}>`.
+`version` remains the upstream semver (`18.20.0`); `variant` is `orb.1`.
+Standalone binary compilation embeds the full fork Git HEAD in `commit`.
+It is not resolved from the runtime environment, current directory or an installed Git checkout.
+Source invocations report `commit: null` and display `source` instead of a compiled commit.
+
+`omp --version` prints `omp/18.20.0 (orb.1 <first-seven-commit-characters>)`.
+Use `BUILD_INFO.commit` and `BUILD_INFO.variant` for provenance; keep using the
+base `VERSION` for semver compatibility checks. A release label alone does not
+identify installed bytes: installers must verify the pinned artifact SHA-256.
+
 ## Quick start (auto-discovery defaults)
 
 ```ts
