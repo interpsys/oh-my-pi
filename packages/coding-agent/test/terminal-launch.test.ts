@@ -187,6 +187,10 @@ describe("generic terminal launch construction", () => {
 			expect(unsupported.error).toContain(multiplexer);
 			expect(unsupported.error).toContain("does not support terminal launches");
 		}
+
+		const rex = getTerminalLaunchPlacement("rex", "pane");
+		if (!("error" in rex)) throw new Error("Rex unexpectedly supports launches");
+		expect(rex.error).toContain("Rex does not support terminal launches");
 	});
 
 	it("rejects unconfirmed shell grammar and leaves optional provider defaults unset", () => {

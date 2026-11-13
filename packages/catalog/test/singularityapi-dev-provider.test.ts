@@ -130,13 +130,16 @@ describe("SingularityAPI universal gateway support", () => {
 		// The wire publishes no reasoning metadata, so without the upgrade rule these
 		// rows stay non-reasoning and every chat request omits `reasoning_effort` —
 		// which the gateway rejects (400 from upstream) whenever `tools` are present.
-		for (const id of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+		const full = ["low", "medium", "high", "xhigh", "max"];
+		// Terra tops out at xhigh (orb fork policy, `thinking-max-effort`).
+		for (const [id, efforts] of [
+			["gpt-5.6-sol", full],
+			["gpt-5.6-terra", full.slice(0, -1)],
+			["gpt-5.6-luna", full],
+		] as const) {
 			const model = buildModel(bareSpec(id));
 			expect(model.reasoning).toBe(true);
-			expect(model.thinking).toMatchObject({
-				mode: "effort",
-				efforts: ["low", "medium", "high", "xhigh", "max"],
-			});
+			expect(model.thinking).toMatchObject({ mode: "effort", efforts });
 			expect(model.compat.maxTokensField).toBe("max_tokens");
 			expect(model.compat.reasoningDisableMode).toBe("none-effort");
 		}

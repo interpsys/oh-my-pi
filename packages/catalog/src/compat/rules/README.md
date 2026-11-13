@@ -317,6 +317,8 @@ The highest-ranked matching assignment wins for that axis. Two distinct rules th
 
 Wire axes are considered for every matching target. Thinking axes require `reasoning`, except that an exact model selector declaring `thinking-efforts` opens the gate for reviewed corrections. A winning `thinking-upgrade-neutral #true` scoped to a recognized class, family, revision, or model selector also opens it when a matching effort ladder exists; provider-wide opt-in alone does not. Materializing a neutral spec as reasoning-capable requires that opt-in and no explicit thinking vocabulary. A winning `thinking-unverified #true` (scoped `class "unknown"` on hosts whose model list carries no capability metadata) instead offers an unclassified neutral spec its ladder as `ThinkingConfig.unverified`: off until the user picks an effort, and sent as non-reasoning without one; it never changes compat. Family and revision selectors never match targets missing that rank. An unmatched target resolves to empty maps; the cascade does not infer negative capabilities from absence.
 
+An explicit spec ladder (a discovery advertisement such as OpenRouter's `supported_efforts`, or a bundled/cached row) wins over a rule's `thinking-efforts`. `thinking-max-effort "<tier>"` is the one thinking axis that binds it too: the resolved ladder, from whichever layer, drops every tier above the winning ceiling together with those tiers' `effortMap`, `effortRouting` and `effortBudgets` entries, and a default level above it falls to the new top tier.
+
 ## Runtime behavior grammar
 
 `runtime/behavior.kdl` has one root `behavior` node. Child node kinds (all optional, strict shapes):
