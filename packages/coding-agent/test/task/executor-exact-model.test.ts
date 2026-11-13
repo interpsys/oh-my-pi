@@ -14,7 +14,7 @@ import * as sdk from "@oh-my-pi/pi-coding-agent/sdk";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as discovery from "@oh-my-pi/pi-coding-agent/task/discovery";
-import { runStructuredSubagent } from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
+import { runStructuredSubagent, StructuredSubagentError } from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
 const perCallSettings = (model: Model, extra: Record<string, unknown> = {}) =>
@@ -37,6 +37,7 @@ async function runWorker(options: {
 	perCallModel: string;
 	settings?: Settings;
 	assignment?: string;
+	emitBeforeSubagentSpawn?: ToolSession["emitBeforeSubagentSpawn"];
 	setup?: (modelRegistry: ModelRegistry) => void;
 }) {
 	const { model, extraModels = [] } = options;
@@ -53,15 +54,13 @@ async function runWorker(options: {
 		authStorage.close();
 		await fs.rm(cwd, { recursive: true, force: true });
 	});
-	authStorage.keys.setRuntime("mock", "test-key");
+	for (const candidate of models) authStorage.keys.setRuntime(candidate.provider, "test-key");
 	registerMockApi(sourceId);
 	const modelRegistry = new ModelRegistry(authStorage, path.join(cwd, "models.yml"));
 	const find = modelRegistry.find.bind(modelRegistry);
 	vi.spyOn(modelRegistry, "find").mockImplementation((provider, id) => {
-		if (provider === "mock") {
-			const matched = models.find(candidate => candidate.id === id);
-			if (matched) return matched;
-		}
+		const matched = models.find(candidate => candidate.provider === provider && candidate.id === id);
+		if (matched) return matched;
 		return find(provider, id);
 	});
 	vi.spyOn(modelRegistry, "getAvailable").mockImplementation(() => models);
@@ -84,6 +83,7 @@ async function runWorker(options: {
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
 		getSessionAgents: () => [],
+		emitBeforeSubagentSpawn: options.emitBeforeSubagentSpawn,
 	} as unknown as ToolSession;
 	const execution = await runStructuredSubagent({
 		session,
@@ -244,5 +244,63 @@ describe("per-call exact selection after background discovery", () => {
 		expect(result.resolvedModel).toBe("mock/target:high");
 		expect(target.calls.map(call => call.options?.reasoning)).toEqual([Effort.High]);
 		expect(override.calls).toHaveLength(0);
+	});
+
+	it("does not let before_subagent_spawn replace an approved per-call model, while still honoring block", async () => {
+		const astra = Object.assign(
+			createMockModel({ id: "gpt-6-astra", reasoning: true, handler: () => ({ content: ["Astra answer."] }) }),
+			{
+				provider: "openai-codex",
+				thinking: {
+					mode: "effort",
+					efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+				} satisfies ThinkingConfig,
+			},
+		);
+		const carbon = Object.assign(
+			createMockModel({ id: "gemini-4-carbon", reasoning: true, handler: () => ({ content: ["Carbon answer."] }) }),
+			{
+				provider: "google-antigravity",
+				thinking: { mode: "effort", efforts: [Effort.Low, Effort.Medium, Effort.High] } satisfies ThinkingConfig,
+			},
+		);
+		const settings = Settings.isolated({
+			"task.maxRecursionDepth": 2,
+			"task.perCallModel": "on",
+			"task.isolation.enabled": false,
+			"compaction.enabled": false,
+			"task.maxEffort": "xhigh",
+			modelRoles: { theorist: "openai-codex/gpt-6-astra:xhigh" },
+		});
+
+		const result = await runWorker({
+			model: astra,
+			extraModels: [carbon],
+			settings,
+			perCallModel: "openai-codex/gpt-6-astra:xhigh",
+			emitBeforeSubagentSpawn: async () => ({
+				model: ["google-antigravity/gemini-4-carbon:high"],
+				note: "pool reroute",
+			}),
+		});
+		expect(result.exitCode).toBe(0);
+		expect(result.output).toBe("Astra answer.");
+		expect(result.resolvedModel).toBe("openai-codex/gpt-6-astra:xhigh");
+		expect(astra.calls.map(call => call.options?.reasoning)).toEqual([Effort.XHigh]);
+		expect(carbon.calls).toHaveLength(0);
+
+		const blocked = await runWorker({
+			model: astra,
+			extraModels: [carbon],
+			settings,
+			perCallModel: "openai-codex/gpt-6-astra:xhigh",
+			emitBeforeSubagentSpawn: async () => ({
+				block: true,
+				reason: "pool exhausted",
+			}),
+		}).catch((error: unknown) => error);
+		expect(blocked).toBeInstanceOf(StructuredSubagentError);
+		expect(blocked as StructuredSubagentError).toMatchObject({ kind: "preflight", message: "pool exhausted" });
+		expect(astra.calls).toHaveLength(1);
 	});
 });
