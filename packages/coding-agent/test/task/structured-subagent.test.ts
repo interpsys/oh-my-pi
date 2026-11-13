@@ -1705,6 +1705,7 @@ describe("per-call model preflight", () => {
 		expect(policy.modelRole).toBeUndefined();
 		expect(policy.perCallModelGrants).toBeDefined();
 
+		mockDiscovery({ ...AGENT, model: ["mock/target"] });
 		await expect(
 			resolveEffectiveSubagentPolicy(
 				request({
@@ -1712,7 +1713,7 @@ describe("per-call model preflight", () => {
 						{
 							"task.perCallModel": "on",
 							modelRoles: {},
-							"task.agentModelOverrides": { worker: "mock/target" },
+							"task.agentModelOverrides": { worker: "mock/other" },
 						},
 						true,
 						false,
@@ -1721,6 +1722,75 @@ describe("per-call model preflight", () => {
 				}),
 			),
 		).rejects.toThrow(/not approved/);
+	});
+
+	it("grants task.agentModelOverrides instead of agent frontmatter model while keeping chat role grants", async () => {
+		const opus = {
+			...createMockModel({ id: "claude-opus-5-5", reasoning: true }),
+			provider: "anthropic",
+		};
+		const sonnet = {
+			...createMockModel({ id: "claude-sonnet-5-5", reasoning: true }),
+			provider: "anthropic",
+		};
+		const carbon = {
+			...createMockModel({ id: "gemini-4-carbon", reasoning: true }),
+			provider: "google-antigravity",
+		};
+		const coder: AgentDefinition = {
+			...AGENT,
+			name: "coder",
+			source: "bundled",
+			model: ["anthropic/claude-opus-5-5"],
+		};
+		mockDiscovery(coder);
+		const coderSession = Object.assign(
+			session({
+				settings: Settings.isolated({
+					"task.isolation.enabled": false,
+					"task.maxRecursionDepth": 2,
+					"task.perCallModel": "on",
+					"task.agentModelOverrides": { coder: "anthropic/claude-sonnet-5-5" },
+					modelRoles: { review: "google-antigravity/gemini-4-carbon" },
+				}),
+			}),
+			{
+				getActiveModelString: () => "mock/parent",
+				modelRegistry: {
+					getAll: () => [opus, sonnet, carbon],
+					getAvailable: () => [opus, sonnet, carbon],
+					isBackgroundRefreshPending: () => false,
+				},
+			},
+		);
+
+		await expect(
+			resolveEffectiveSubagentPolicy(
+				request({
+					session: coderSession,
+					agent: "coder",
+					perCallModel: "anthropic/claude-opus-5-5:max",
+				}),
+			),
+		).rejects.toThrow(/not approved/);
+
+		const carbonPolicy = await resolveEffectiveSubagentPolicy(
+			request({
+				session: coderSession,
+				agent: "coder",
+				perCallModel: "google-antigravity/gemini-4-carbon",
+			}),
+		);
+		expect(carbonPolicy.modelOverride).toEqual(["google-antigravity/gemini-4-carbon"]);
+
+		const sonnetPolicy = await resolveEffectiveSubagentPolicy(
+			request({
+				session: coderSession,
+				agent: "coder",
+				perCallModel: "anthropic/claude-sonnet-5-5",
+			}),
+		);
+		expect(sonnetPolicy.modelOverride).toEqual(["anthropic/claude-sonnet-5-5"]);
 	});
 
 	// Both defer to the executor's post-refresh check: an unloaded model while discovery runs,
