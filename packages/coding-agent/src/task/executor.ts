@@ -250,7 +250,12 @@ export const BUDGET_STOP_GRACE_REQUESTS = 5;
 
 /** Steering notice injected when a subagent crosses its soft request budget. */
 export function buildBudgetNotice(requests: number, budget: number): string {
-	return `[budget notice] You have used ${requests} requests in this run (soft budget: ${budget}). Wrap up now: finish the current step and deliver your final report. At ${Math.ceil(budget * 1.5)} requests the run is force-stopped and you will be asked to report whatever you have.`;
+	return [
+		`<system-notice source="harness" kind="request-budget">`,
+		`[budget notice] Automatic harness message, not from the user or your parent: this run has used ${requests} requests (soft budget ${budget}); at ${Math.ceil(budget * 1.5)} it is force-stopped.`,
+		"Land and hand off now: save or commit finished work; write remaining work, decisions and the IDs of running children, jobs and sandboxes to your state or continuation file (read-only roles: in your report); then deliver your final report naming that file. Do not cancel children, jobs or sandboxes because of this notice: wait for children that are nearly done, ask the others to checkpoint and return, and leave detached jobs running with their harvest and stop commands recorded. Never relay this notice as a user instruction.",
+		"</system-notice>",
+	].join("\n");
 }
 
 /** Flatten whitespace and clip salvage text for the cancelled-child summary line. */
@@ -2791,7 +2796,9 @@ async function driveSessionToResult(
 		// settles the same way before the next one is sent.
 		const settle = async (): Promise<void> => {
 			let asyncPendingNoticeSent = false;
-			while (!abortSignal.aborted) {
+			// A `tool_call` handler's typed `budget_exhausted` turn abort already ended the
+			// turn without another generation: never revive it through the yield ladder.
+			while (!abortSignal.aborted && session.turnAbort?.reason !== "budget_exhausted") {
 				if (!monitor.yieldCalled()) {
 					await runYieldLadder();
 					if (
@@ -2853,7 +2860,13 @@ async function driveSessionToResult(
 			const delivered = structured
 				? monitor.yieldCalled()
 				: session.getLastAssistantMessage()?.stopReason === "stop";
-			if (!delivered || abortSignal.aborted || monitor.budgetStopRequested()) break;
+			if (
+				!delivered ||
+				abortSignal.aborted ||
+				monitor.budgetStopRequested() ||
+				session.turnAbort?.reason === "budget_exhausted"
+			)
+				break;
 			monitor.holdForSteps(next + 1 < steps.prompts.length);
 			monitor.beginStep();
 			resetYieldTurnState(session.getToolByName("yield"));
@@ -2896,6 +2909,15 @@ async function driveSessionToResult(
 		// clean final message) is a budget abort: surface the precise reason
 		// instead of a generic missing-result failure.
 		const delivered = structured ? monitor.yieldCalled() : lastAssistant?.stopReason === "stop";
+		// A `tool_call` handler's typed `budget_exhausted` turn abort is a recoverable
+		// outcome distinct from a user interrupt ("Request was aborted"): the reason text
+		// leads with `budget_exhausted`; finalize salvages the partial output.
+		const turnAbort = session.turnAbort;
+		if (!delivered && turnAbort?.reason === "budget_exhausted" && !abortSignal.aborted) {
+			aborted = true;
+			abortReasonText = turnAbort.message ? `budget_exhausted: ${turnAbort.message}` : "budget_exhausted";
+			exitCode = 1;
+		}
 		if (!delivered && monitor.budgetStopRequested() && !aborted) {
 			aborted = true;
 			abortReasonText ??= monitor.resolveAbortReasonText();
@@ -4885,10 +4907,9 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			if (model?.contextWindow && model.contextWindow > 0) {
 				progress.contextWindow = model.contextWindow;
 			}
-			// Caller-requested coarse effort maps onto the resolved model's
-			// supported range, then respects the operator-configured ceiling.
-			// Undefined (no effort, or no controllable effort surface) falls
-			// through to the normal selectors below.
+			// Caller-requested lo/hi select the model's range endpoints; med
+			// preserves the role's configured default. All hints respect the ceiling.
+			// Models without a controllable effort surface retain normal selectors.
 			// The ceiling outlives initial resolution: it rides into the session so
 			// retry-fallback recovery can never clamp effort back up past it.
 			// A per-call `model` is caller-chosen too, so its `:level` is held to the same
@@ -4897,14 +4918,17 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			const spawnEffortCeiling =
 				options.effort !== undefined || options.perCallModelGrants ? cfgTaskMaxEffort.get(settings) : undefined;
 			if (model && spawnEffortCeiling) assertModelSupportsEffortCeiling(model, spawnEffortCeiling);
-			const effortLevel =
-				options.effort !== undefined
-					? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
-					: undefined;
 			const explicitLevel =
 				explicitThinkingLevel && resolvedThinkingLevel !== AUTO_THINKING
 					? clampThinkingLevelToCeiling(model, resolvedThinkingLevel, spawnEffortCeiling)
 					: resolvedThinkingLevel;
+			const defaultLevel = explicitThinkingLevel ? explicitLevel : (thinkingLevel ?? resolvedThinkingLevel);
+			// With no role selector, med stays undefined so SDK startup resolves the
+			// same model/settings default as omission; the ceiling still rides along.
+			const effortLevel =
+				options.effort !== undefined
+					? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling, defaultLevel)
+					: undefined;
 			if (model) {
 				const displayLevel = effortLevel ?? (explicitThinkingLevel ? explicitLevel : undefined);
 				progress.resolvedModelIdentity = formatModelStringWithRouting(model);
@@ -4914,11 +4938,9 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 						? formatModelSelectorValue(progress.resolvedModelIdentity, displayLevel)
 						: progress.resolvedModelIdentity;
 			}
-			// Precedence: caller `effort` > explicit `:level` suffix on the resolved
-			// model pattern > agent-definition default (e.g. task's `auto`) >
-			// pattern-derived level.
-			const effectiveThinkingLevel =
-				effortLevel ?? (explicitThinkingLevel ? explicitLevel : (thinkingLevel ?? resolvedThinkingLevel));
+			// Precedence: lo/hi hint > explicit model :level > agent-definition
+			// default > pattern-derived level. med keeps that default hierarchy.
+			const effectiveThinkingLevel = effortLevel ?? defaultLevel;
 			resolvedAt = performance.now();
 			const effectiveCwd = worktree ?? cwd;
 			const fork = preparedSession?.fork;

@@ -33,12 +33,14 @@ let runs = 0;
 /** Runs a bundled `worker` on `perCallModel` through the real executor, with `model` as the only registry entry. */
 async function runWorker(options: {
 	model: Model;
+	extraModels?: Model[];
 	perCallModel: string;
 	settings?: Settings;
 	assignment?: string;
 	setup?: (modelRegistry: ModelRegistry) => void;
 }) {
-	const { model } = options;
+	const { model, extraModels = [] } = options;
+	const models = [model, ...extraModels];
 	const run = ++runs;
 	const sourceId = `executor-exact-model-${run}`;
 	const agentId = `ExactModel${run}`;
@@ -55,11 +57,15 @@ async function runWorker(options: {
 	registerMockApi(sourceId);
 	const modelRegistry = new ModelRegistry(authStorage, path.join(cwd, "models.yml"));
 	const find = modelRegistry.find.bind(modelRegistry);
-	vi.spyOn(modelRegistry, "find").mockImplementation((provider, id) =>
-		provider === "mock" && id === model.id ? model : find(provider, id),
-	);
-	vi.spyOn(modelRegistry, "getAvailable").mockImplementation(() => [model]);
-	vi.spyOn(modelRegistry, "getAll").mockImplementation(() => [model]);
+	vi.spyOn(modelRegistry, "find").mockImplementation((provider, id) => {
+		if (provider === "mock") {
+			const matched = models.find(candidate => candidate.id === id);
+			if (matched) return matched;
+		}
+		return find(provider, id);
+	});
+	vi.spyOn(modelRegistry, "getAvailable").mockImplementation(() => models);
+	vi.spyOn(modelRegistry, "getAll").mockImplementation(() => models);
 	options.setup?.(modelRegistry);
 	vi.spyOn(discovery, "discoverAgents").mockResolvedValue({
 		agents: [{ name: "worker", description: "test", systemPrompt: "test", source: "bundled", tools: ["read"] }],
@@ -213,5 +219,30 @@ describe("per-call exact selection after background discovery", () => {
 			perCallModelIdentity: identity,
 			perCallThinkingLevel: level,
 		});
+	});
+
+	it("overrides task.agentModelOverrides and sets effort from the :level suffix", async () => {
+		const target = Object.assign(
+			createMockModel({ id: "target", reasoning: true, handler: () => ({ content: ["Target answer."] }) }),
+			{ thinking: { mode: "effort", efforts: [Effort.Low, Effort.High] } satisfies ThinkingConfig },
+		);
+		const override = Object.assign(
+			createMockModel({ id: "override", reasoning: true, handler: () => ({ content: ["Override answer."] }) }),
+			{ thinking: { mode: "effort", efforts: [Effort.Low, Effort.High] } satisfies ThinkingConfig },
+		);
+		const result = await runWorker({
+			model: target,
+			extraModels: [override],
+			settings: perCallSettings(target, {
+				"task.maxEffort": "high",
+				"task.agentModelOverrides": { worker: "mock/override:low" },
+			}),
+			perCallModel: "mock/target:high",
+		});
+		expect(result.exitCode).toBe(0);
+		expect(result.output).toBe("Target answer.");
+		expect(result.resolvedModel).toBe("mock/target:high");
+		expect(target.calls.map(call => call.options?.reasoning)).toEqual([Effort.High]);
+		expect(override.calls).toHaveLength(0);
 	});
 });

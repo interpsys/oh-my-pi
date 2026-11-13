@@ -505,6 +505,64 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.Max);
 	});
 
+	it.each([
+		{
+			name: "model override beats frontmatter",
+			modelOverride: "anthropic/claude-opus-5-5:medium",
+			thinkingLevel: ThinkingLevel.Low,
+			expected: Effort.Medium,
+		},
+		{ name: "frontmatter beats snapshot", thinkingLevel: ThinkingLevel.Low, expected: Effort.Low },
+		{ name: "auto frontmatter", thinkingLevel: "auto" as const, expected: "auto" },
+		{ name: "off frontmatter", thinkingLevel: ThinkingLevel.Off, expected: ThinkingLevel.Off },
+	])("med preserves $name just like an omitted hint", async ({ modelOverride, thinkingLevel, expected }) => {
+		const model = getBundledModel("anthropic", "claude-opus-5-5");
+		if (!model) throw new Error("Expected bundled Claude Opus 5.5 model");
+		const settings = Settings.isolated({ defaultThinkingLevel: Effort.XHigh });
+		const spy = vi
+			.spyOn(sdkModule, "createAgentSession")
+			.mockResolvedValue(createSessionResult(yieldEmittingSession()));
+		for (const effort of [undefined, "med"] as const) {
+			const result = await runSubprocess({
+				...baseOptions,
+				agent: { ...baseAgent, model: [`${model.provider}/${model.id}`] },
+				id: `subagent-role-default-${effort ?? "omitted"}`,
+				modelOverride,
+				thinkingLevel,
+				effort,
+				settings,
+				modelRegistry: createModelRegistry(model),
+			});
+			expect(result.exitCode).toBe(0);
+			expect(spy.mock.calls.at(-1)?.[0]?.thinkingLevel).toBe(expected);
+			if (effort === "med") expect(result.resolvedThinkingLevel).toBe(expected);
+		}
+	});
+
+	it.each([
+		{ effort: "med" as const, ceiling: Effort.Low, expected: Effort.Low },
+		{ effort: "hi" as const, ceiling: Effort.XHigh, expected: Effort.XHigh },
+		{ effort: "lo" as const, ceiling: Effort.XHigh, expected: Effort.Low },
+	])("keeps $effort within the $ceiling ceiling on Opus", async ({ effort, ceiling, expected }) => {
+		const model = getBundledModel("anthropic", "claude-opus-5-5");
+		if (!model) throw new Error("Expected bundled Claude Opus 5.5 model");
+		const settings = Settings.isolated({ "task.maxEffort": ceiling });
+		const spy = vi
+			.spyOn(sdkModule, "createAgentSession")
+			.mockResolvedValue(createSessionResult(yieldEmittingSession()));
+		const result = await runSubprocess({
+			...baseOptions,
+			modelOverride: `${model.provider}/${model.id}:medium`,
+			effort,
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(expected);
+		expect(result.resolvedThinkingLevel).toBe(expected);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevelCeiling).toBe(ceiling);
+	});
+
 	it("resolves an explicit task-role effort suffix over the agent-definition default", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");

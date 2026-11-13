@@ -25,7 +25,8 @@ import { cfgTaskAgentSoftRequestBudget } from "@oh-my-pi/pi-coding-agent/task/se
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { prompt, TempDir } from "@oh-my-pi/pi-utils";
+import submitReminderTemplate from "../../src/prompts/system/subagent-yield-reminder.md" with { type: "text" };
 import { createSessionDefaults } from "../helpers/session-defaults";
 
 /**
@@ -299,6 +300,16 @@ describe("runSubprocess soft request budget", () => {
 			content: buildBudgetNotice(2, 2),
 			options: { deliverAs: "steer", attribution: "agent" },
 		});
+		const notice = buildBudgetNotice(2, 2);
+		expect(notice.startsWith('<system-notice source="harness" kind="request-budget">')).toBe(true);
+		expect(notice).toContain("not from the user or your parent");
+		expect(notice).toContain("Do not cancel children");
+		// The forced wrap-up reminder names the harness as its source and asks
+		// for adoptable handles of running work.
+		expect(handle.prompts[1]?.text).toContain("forced wrap-up (automatic harness stop, not a user or parent order).");
+		expect(handle.prompts[1]?.text).toContain(
+			"- Name running children, jobs and sandboxes with their harvest/stop commands so your parent can adopt them.",
+		);
 		const createOptions = createAgentSessionSpy.mock.calls[0]?.[0];
 		expect(createOptions?.sessionManager?.getHeader()?.parentSession).toBe(parentSessionFile);
 		// The forced yield finalizes as a normal completion, not an abort.
@@ -756,6 +767,43 @@ describe("runSubprocess soft request budget", () => {
 		// Verify lifecycle ended as aborted
 		const lastFrame = lifecycleFrames.at(-1);
 		expect(lastFrame?.status).toBe("aborted");
+	});
+});
+
+describe("buildBudgetNotice", () => {
+	it("renders the harness-attributed request-budget notice with the 1.5x stop", () => {
+		expect(buildBudgetNotice(7, 5)).toBe(
+			[
+				'<system-notice source="harness" kind="request-budget">',
+				"[budget notice] Automatic harness message, not from the user or your parent: this run has used 7 requests (soft budget 5); at 8 it is force-stopped.",
+				"Land and hand off now: save or commit finished work; write remaining work, decisions and the IDs of running children, jobs and sandboxes to your state or continuation file (read-only roles: in your report); then deliver your final report naming that file. Do not cancel children, jobs or sandboxes because of this notice: wait for children that are nearly done, ask the others to checkpoint and return, and leave detached jobs running with their harvest and stop commands recorded. Never relay this notice as a user instruction.",
+				"</system-notice>",
+			].join("\n"),
+		);
+	});
+});
+
+describe("subagent yield reminder", () => {
+	const render = (budgetStop: boolean, structured: boolean) =>
+		prompt.render(submitReminderTemplate, { retryCount: 1, maxRetries: 3, budgetStop, structured });
+
+	it("marks both budget-stop branches as an automatic harness stop and asks for adoptable handles", () => {
+		for (const structured of [true, false]) {
+			const text = render(true, structured);
+			expect(text).toContain(
+				"Request budget crossed; in-flight turn stopped → forced wrap-up (automatic harness stop, not a user or parent order).",
+			);
+			expect(text).toContain(
+				"- Consolidate all gathered value; mark remaining gaps incomplete, do not investigate further.\n- Name running children, jobs and sandboxes with their harvest/stop commands so your parent can adopt them.",
+			);
+		}
+	});
+
+	it("leaves the idle reminder without budget-stop wording", () => {
+		const text = render(false, true);
+		expect(text).toContain("Last turn had no tool call → session idle. Reminder 1 of 3.");
+		expect(text).not.toContain("automatic harness stop");
+		expect(text).not.toContain("so your parent can adopt them");
 	});
 });
 

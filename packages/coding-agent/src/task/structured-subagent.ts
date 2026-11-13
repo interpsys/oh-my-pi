@@ -416,7 +416,6 @@ function preflightPerCallModel(
 	request: StructuredSubagentRequest,
 	selector: unknown,
 	agent: AgentDefinition,
-	hasModelOverride: boolean,
 	userTaggedEffort: boolean,
 	parentModelPattern: string | undefined,
 ): PerCallModelGrants {
@@ -428,11 +427,6 @@ function preflightPerCallModel(
 	const disabled = perCallModelDisabledReason(settings, request.invocationKind);
 	if (disabled) fail(disabled);
 	if (isBundledSeance(agent)) fail(`Per-call model is not supported for the \`${SEANCE_AGENT_NAME}\` agent.`);
-	if (hasModelOverride) {
-		fail(
-			`Per-call model conflicts with task.agentModelOverrides for agent "${agent.name}". Omit model to use the configured override.`,
-		);
-	}
 	if (userTaggedEffort) {
 		fail(
 			`Per-call model conflicts with the user's \`^model:level\` tag for agent "${agent.name}". Omit model to use the tagged model and effort.`,
@@ -616,7 +610,6 @@ export async function resolveEffectiveSubagentPolicy(
 					request,
 					perCallSelector,
 					agent,
-					Object.hasOwn(agentModelOverrides, agentName),
 					userTaggedEffort,
 					// A multi-upstream or otherwise richer parent route cannot grant a simpler selector.
 					parentActiveModel

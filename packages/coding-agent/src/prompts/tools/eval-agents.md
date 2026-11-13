@@ -18,7 +18,7 @@ await agent(prompt, { agent?, label?, schema?, schemaMode?, isolated?, apply?, m
 {{#if perCallModelAdvertisement.allowlist.length}}
     - Allowlist: {{#list perCallModelAdvertisement.allowlist join=", "}}`{{this}}`{{/list}} (must also be approved).
 {{/if}}
-    - An agent's `task.agentModelOverrides` entry or user-chosen effort conflicts with it.
+    - A user-chosen `^model:level` effort conflicts with it; otherwise `model` overrides `task.agentModelOverrides`.
     - Unavailable → stop and report; NEVER substitute another.
     - Every request requires an approved model; retry fallback, context promotion and prewalk are off.
 {{/if}}

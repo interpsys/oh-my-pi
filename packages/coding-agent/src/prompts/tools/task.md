@@ -54,7 +54,7 @@ Run one agent synchronously.
 - `tools`: eval-defined, run in your kernel.
 {{/if}}
 {{#if effortEnabled}}
-- `effort`: `"lo"`|`"med"`|`"hi"` by how open-ended the problem is.
+- `effort`: omit by default; the role's configured thinking level applies (`"med"` is equivalent). Use `"hi"` only for problems hard to get right (subtle concurrency, unclear root cause, high-stakes fix), `"lo"` for mechanical lookups/edits. Volume of work never raises it.
 {{/if}}
 {{#if perCallModelEnabled}}
 - `model`: one exact `provider/model-id[@upstream][:level]` string for this spawn only{{#if batchEnabled}}; per `tasks[]` item{{/if}}.
@@ -72,7 +72,7 @@ Run one agent synchronously.
 {{#if perCallModelAdvertisement.allowlist.length}}
   - Allowlist: {{#list perCallModelAdvertisement.allowlist join=", "}}`{{this}}`{{/list}} (must also be approved).
 {{/if}}
-  - An agent's `task.agentModelOverrides` entry or user-chosen effort conflicts with `model`.
+  - A user-chosen `^model:level` effort conflicts with `model`; otherwise `model` overrides `task.agentModelOverrides`.
   - Omit unless needed.
   - Requested model unavailable → stop and report; NEVER substitute another.
   - Every request requires an approved model; retry fallback, context promotion and prewalk are off.

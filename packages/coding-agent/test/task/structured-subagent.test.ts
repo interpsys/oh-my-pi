@@ -1669,13 +1669,6 @@ describe("per-call model preflight", () => {
 		["a non-chat model", "mock/painter", {}, false, /image model; a subagent needs a chat model/],
 		["a non-chat model while discovery is running", "mock/painter", {}, true, /image model/],
 		["an unapproved model", "mock/target", { modelRoles: {} }, false, /not approved/],
-		[
-			"a model for an agent with an override",
-			"mock/target",
-			{ "task.agentModelOverrides": { worker: "mock/target" } },
-			false,
-			/conflicts with task\.agentModelOverrides/,
-		],
 	] as const)("rejects %s", async (_name, perCallModel, settings, refreshPending, error) => {
 		mockDiscovery();
 		await expect(
@@ -1690,6 +1683,44 @@ describe("per-call model preflight", () => {
 				}),
 			),
 		).rejects.toThrow(error);
+	});
+
+	it("allows an approved per-call model to override task.agentModelOverrides while keeping approval enforced", async () => {
+		mockDiscovery();
+		const policy = await resolveEffectiveSubagentPolicy(
+			request({
+				session: perCallSession(
+					{
+						"task.perCallModel": "on",
+						modelRoles: { review: "mock/target" },
+						"task.agentModelOverrides": { worker: "mock/other" },
+					},
+					true,
+					false,
+				),
+				perCallModel: "mock/target:high",
+			}),
+		);
+		expect(policy.modelOverride).toEqual(["mock/target:high"]);
+		expect(policy.modelRole).toBeUndefined();
+		expect(policy.perCallModelGrants).toBeDefined();
+
+		await expect(
+			resolveEffectiveSubagentPolicy(
+				request({
+					session: perCallSession(
+						{
+							"task.perCallModel": "on",
+							modelRoles: {},
+							"task.agentModelOverrides": { worker: "mock/target" },
+						},
+						true,
+						false,
+					),
+					perCallModel: "mock/target",
+				}),
+			),
+		).rejects.toThrow(/not approved/);
 	});
 
 	// Both defer to the executor's post-refresh check: an unloaded model while discovery runs,
