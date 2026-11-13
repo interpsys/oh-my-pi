@@ -10,6 +10,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { CompactChrome } from "@oh-my-pi/pi-tui/prompt/composer";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -143,6 +144,21 @@ describe("InteractiveMode todo HUD persistence", () => {
 		const rendered = renderTodos(mode);
 		expect(rendered).toContain("2/3");
 		expect(rendered).toContain("current task");
+	});
+
+	it("summarizes plan progress and the actionable task in one pressure-bounded row without hiding the plan", () => {
+		setTodoClearDelay(-1);
+		mode.setTodos(unfinishedPlan());
+		const hud = mode.todoContainer as typeof mode.todoContainer & CompactChrome;
+		const full = renderTodos(mode);
+		const summary = hud.renderCompact(80);
+		expect(Bun.stripANSI(summary ?? "")).toContain("2/3");
+		expect(Bun.stripANSI(summary ?? "")).toContain("current task");
+		expect(summary).not.toContain("\n");
+		expect(Bun.stringWidth(hud.renderCompact(12) ?? "")).toBeLessThanOrEqual(12);
+		expect(renderTodos(mode)).toBe(full);
+		mode.setTodos([]);
+		expect(hud.renderCompact(80)).toBeUndefined();
 	});
 
 	it("leaves closed todos visible when auto-clear is disabled", () => {
