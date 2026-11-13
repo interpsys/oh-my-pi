@@ -1114,6 +1114,15 @@ The session journal (`session.jsonl`) records the experiment as `custom` entries
 
 The result's `details.spotlight` trace carries the same sizes and coins, `savedTokens`, and for a changed text `original` (the original as a session artifact, its kept runs and reasons, and its per-line heat: each line's rank among the lines Spotlight scored, `0`–`9`). A held-out result's trace adds `holdout: true`; `savedTokens` is the would-be saving, `original.kept` the would-be kept runs, and `original.shapedUrl` the session artifact holding the would-be text.
 
+### Headless concurrency
+
+```yaml
+headless:
+   maxConcurrent: 12 # headless runs allowed at once on this machine
+```
+
+Caps concurrent headless runs (`-p`, `--mode text|json`, or stdin that is not a terminal) machine-wide: each run holds one of N slot locks under `~/.omp/run/headless-gate` from before its session starts until it exits, and waits while all are held (see [Headless / print mode](./cli-reference.md#headless--print-mode)). Must be a positive integer; an invalid value fails a headless launch with exit 1. It is read only from the active profile's global `config.yml`, at launch; project config, `--config` and `PI_CONFIG_FILES` do not apply. `OMP_HEADLESS_SLOTS` can lower it for one run, never raise it.
+
 ### Other groups
 
 Every schema path not individually tabulated in this catalog is explicitly deferred to `omp config list`. Additional groups include:

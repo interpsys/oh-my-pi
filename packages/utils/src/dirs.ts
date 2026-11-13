@@ -1174,6 +1174,15 @@ export function getSessionOwnersDir(): string {
 	return dirs.baseRootSubdir(path.join("run", "session-owners"), "state");
 }
 
+/**
+ * Directory of headless-run slot locks (~/.omp/run/headless-gate; XDG default:
+ * $XDG_STATE_HOME/omp/run/headless-gate). Shared across profiles: one machine-wide
+ * cap covers every headless omp run, whichever profile or runner started it.
+ */
+export function getHeadlessGateDir(): string {
+	return dirs.baseRootSubdir(path.join("run", "headless-gate"), "state");
+}
+
 /** Get the provider in-flight root directory (~/.omp/run/provider-inflight; XDG default: $XDG_STATE_HOME/omp/run/provider-inflight). */
 export function getProviderInFlightRoot(): string {
 	return dirs.rootSubdir(path.join("run", "provider-inflight"), "state");
