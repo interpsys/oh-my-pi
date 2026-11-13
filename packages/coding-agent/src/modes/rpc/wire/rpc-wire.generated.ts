@@ -134,6 +134,7 @@ export interface AssistantMessage {
 	responseId?: string;
 	upstreamProvider?: string;
 	upstreamModel?: string;
+	responseModel?: string;
 	errorMessage?: string;
 	errorStatus?: number;
 	errorId?: number;

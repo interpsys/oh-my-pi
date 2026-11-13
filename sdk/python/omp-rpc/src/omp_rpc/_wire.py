@@ -316,6 +316,7 @@ class AssistantMessage(TypedDict):
     responseId: NotRequired[str]
     upstreamProvider: NotRequired[str]
     upstreamModel: NotRequired[str]
+    responseModel: NotRequired[str]
     errorMessage: NotRequired[str]
     errorStatus: NotRequired[int]
     errorId: NotRequired[float]
