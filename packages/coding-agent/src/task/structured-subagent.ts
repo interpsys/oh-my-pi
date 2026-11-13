@@ -438,13 +438,22 @@ function preflightPerCallModel(
 	});
 	if (selectorProblem) fail(selectorProblem);
 	const perCallModel = selector as string;
+	const authoritySettings = settings.grantAuthority();
+	const agentModelOverrides = cfgTaskAgentModelOverrides.get(authoritySettings);
+	const agentModelOverride = Object.hasOwn(agentModelOverrides, agent.name)
+		? agentModelOverrides[agent.name]
+		: undefined;
+	const effectiveAgentModel =
+		resolveConfiguredModelPatterns(agentModelOverride, authoritySettings).length > 0
+			? agentModelOverride
+			: agent.model;
 	const grants: PerCallModelGrants = {
 		settings,
 		agentName: agent.name,
-		agentModel: agent.model,
+		agentModel: effectiveAgentModel,
 		agentSource: agent.source,
 		parentModelPattern,
-		matchPreferences: structuredClone(getModelMatchPreferences(settings.grantAuthority())),
+		matchPreferences: structuredClone(getModelMatchPreferences(authoritySettings)),
 	};
 	// A cold registry is checked again in the executor once models are loaded.
 	const available = modelRegistry?.getAvailable("all");
