@@ -530,6 +530,20 @@ if "__omp_prelude_loaded__" not in globals():
         )
         return _surface_bridged_tool_images(value)
 
+    def _unwrap_mcp(value):
+        """MCP envelopes (`details` has `serverName` + `mcpToolName`) become their payload: structuredContent, else JSON text, else text; an error result raises."""
+        details = value.get("details") if isinstance(value, dict) else None
+        if not isinstance(details, dict) or not isinstance(details.get("serverName"), str) or not isinstance(details.get("mcpToolName"), str):
+            return value
+        if value.get("hasError"):
+            raise RuntimeError(value["text"])
+        if "structuredContent" in details:
+            return details["structuredContent"]
+        try:
+            return json.loads(value["text"])
+        except ValueError:
+            return value["text"]
+
     class _ToolCallable:
         """Invokes one host-side tool via the loopback HTTP bridge."""
 
@@ -552,7 +566,7 @@ if "__omp_prelude_loaded__" not in globals():
                 )
             merged.update(kwargs)
             value = await asyncio.to_thread(_bridge_call, self._name, merged)
-            return _surface_bridged_tool_images(value)
+            return _unwrap_mcp(_surface_bridged_tool_images(value))
 
     def _annotation_schema(annotation) -> dict:
         """Map supported Python annotations to JSON Schema."""
@@ -934,7 +948,7 @@ if "__omp_prelude_loaded__" not in globals():
             return f"<judgment {self.key!r} {self.answers!r}>"
 
     class JudgmentBatch:
-        """Host-owned bulk judgment run. Pull settled items with ``await drain()`` across as many cells as needed."""
+        """Host-owned bulk judgment run. ``await batch`` waits until every item settled and returns the batch; or pull settled items with ``await drain()`` across as many cells as needed."""
 
         __slots__ = ("id", "total", "intent")
 
@@ -947,8 +961,18 @@ if "__omp_prelude_loaded__" not in globals():
             return _bridge_call("__judge_batch__", {"op": op, "id": self.id, **args})
 
         def status(self):
-            """Snapshot: ``intent``, ``done``, ``total``, ``failed``, ``running``, ``model``, ``elapsedS``."""
+            """Snapshot: ``intent``, ``done``, ``total``, ``failed``, ``running``, ``model`` (``None`` before any answer, ``"mixed"`` when several answered), ``models`` (answers per model), ``elapsedS``."""
             return self._call("status")
+
+        def __await__(self):
+            async def settle():
+                # Concurrent awaiters share the drain cursor, so one can see an empty drain while the run is live.
+                while True:
+                    running = (await asyncio.to_thread(self.status))["running"]
+                    if not await self.drain(None if running else 0) and not running:
+                        return self
+
+            return settle().__await__()
 
         async def drain(self, timeout=None):
             """Items settled since the last drain as ``[(key, JudgmentItem)]``; waits up to ``timeout`` seconds for at least one, else ``[]``."""
@@ -971,7 +995,7 @@ if "__omp_prelude_loaded__" not in globals():
                     yield entry
 
         def results(self):
-            """``{key: answers}`` for every item judged so far."""
+            """``{key: {"answers": answers, "model": model}}`` for every item judged so far."""
             result = self._call("results")
             return result.get("results", {}) if isinstance(result, dict) else {}
 
@@ -1011,7 +1035,7 @@ if "__omp_prelude_loaded__" not in globals():
         min_ok=None,
         intent=None,
     ):
-        """Judge every state with the same ``questions`` on the host; returns a ``JudgmentBatch`` to drain across cells.
+        """Judge every state with the same ``questions`` on the host; returns a ``JudgmentBatch`` at once. ``b = await judge_batch(...)`` waits for every item and returns the batch (read ``b.results()``/``b.failed()``); a plain call drains across cells.
 
         ``states`` is ``{key: state}`` or a list (keys are indices). ``intent`` is an
         optional nonempty progress/job label. Item failures land in ``JudgmentItem.error``;

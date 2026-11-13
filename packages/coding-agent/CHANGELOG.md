@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- The native judgment answer cache (`~/.omp/cache/judgment-cache.db`) is capped by `OMP_JUDGMENT_CACHE_MAX_BYTES` (default 2 GiB): above it the oldest judged states are pruned with their answers and the freed space is returned to the filesystem. An existing cache is rebuilt once with incremental auto-vacuum the first time it is pruned
+
+### Changed
+
+- Eval `tool.mcp__<server>_<tool>(...)` returns the MCP payload itself (`structuredContent`, else the JSON-decoded text, else the text), and an MCP error result raises instead of returning a flagged object; MCP image blocks still display
+- Python eval `b = await judge_batch(...)` waits until every item settled and returns the batch; a plain call still returns at once
+
+### Fixed
+
+- Python eval cells compile as `<cell-N>` and register their source, so `inspect.getsource` works on functions defined in earlier cells and tracebacks show the source lines
+- Eval `tool.*` calls skip the shared artifact spill: code receives the full `text`, MCP `details.rawContent` and `details.structuredContent`, and no unused artifact is written (tools that bound their own output, such as `bash`, keep doing so).
+- Spilled direct MCP tool results drop `details.structuredContent` with the duplicate `rawContent` text, so a large structured payload lives only in its artifact instead of in live history.
+- `judge_batch` `status()` always carries `model` (`null` before any answer, `"mixed"` when more than one backend answered, instead of the backend of the last settled item) and `models` (answers per backend); `results()` returns `{key: {answers, model}}`.
+
 ## [18.20.0] - 2026-11-12
 
 ### Breaking Changes

@@ -66,6 +66,9 @@ export interface JudgmentBatchItem {
 	model?: string;
 }
 
+/** One answered item as `results()` returns it. */
+export type JudgmentBatchAnswer = Pick<JudgmentBatchItem, "answers" | "model">;
+
 /** Snapshot returned by `status()` and carried on `create`/`attach`. */
 export interface JudgmentBatchStatus {
 	id: string;
@@ -77,8 +80,10 @@ export interface JudgmentBatchStatus {
 	/** Accumulated USD cost of every judgment attempt, including retries and failures. */
 	cost: number;
 	running: boolean;
-	/** Backend that answered the most recent item. */
-	model?: string;
+	/** Backend that answered every item so far, `"mixed"` when more than one did (see `models`), `null` before any answer. */
+	model: string | null;
+	/** Items answered per backend. */
+	models: Record<string, number>;
 	elapsedS: number;
 	/** Set when the run died wholesale; `drain()` raises it once the cursor is exhausted. */
 	error?: string;
@@ -93,7 +98,7 @@ export interface EvalJudgmentBatchBridgeOptions {
 export type EvalJudgmentBatchResult =
 	| JudgmentBatchStatus
 	| { items: JudgmentBatchItem[] }
-	| { results: Record<string, Record<string, CellAnswer>> }
+	| { results: Record<string, JudgmentBatchAnswer> }
 	| { failed: Record<string, string> }
 	| { cancelled: boolean }
 	| { closed: boolean };
@@ -186,7 +191,7 @@ export class JudgmentBatch {
 	#cursor = 0;
 	#failed = 0;
 	#cost = 0;
-	#model: string | undefined;
+	readonly #models: Record<string, number> = {};
 	#running = true;
 	#error: string | undefined;
 	#lastProgressAt = 0;
@@ -251,6 +256,7 @@ export class JudgmentBatch {
 	}
 
 	status(): JudgmentBatchStatus {
+		const models = Object.keys(this.#models);
 		return {
 			id: this.id,
 			intent: this.intent,
@@ -259,7 +265,8 @@ export class JudgmentBatch {
 			failed: this.#failed,
 			cost: this.#cost,
 			running: this.#running,
-			...(this.#model === undefined ? {} : { model: this.#model }),
+			model: models.length === 0 ? null : models.length === 1 ? models[0] : "mixed",
+			models: { ...this.#models },
 			elapsedS: Math.round((Date.now() - this.#startedAt) / 100) / 10,
 			...(this.#error === undefined ? {} : { error: this.#error }),
 		};
@@ -290,9 +297,10 @@ export class JudgmentBatch {
 		return [];
 	}
 
-	results(): Record<string, Record<string, CellAnswer>> {
-		const out: Record<string, Record<string, CellAnswer>> = {};
-		for (const item of this.#settled) if (item.answers) out[String(item.key)] = item.answers;
+	results(): Record<string, JudgmentBatchAnswer> {
+		const out: Record<string, JudgmentBatchAnswer> = {};
+		for (const item of this.#settled)
+			if (item.answers) out[String(item.key)] = { answers: item.answers, model: item.model };
 		return out;
 	}
 
@@ -343,7 +351,7 @@ export class JudgmentBatch {
 	#settle(item: JudgmentBatchItem): void {
 		this.#settled.push(item);
 		if (item.error !== undefined) this.#failed++;
-		if (item.model !== undefined) this.#model = item.model;
+		if (item.model !== undefined) this.#models[item.model] = (this.#models[item.model] ?? 0) + 1;
 		for (const wake of this.#waiters.splice(0)) wake();
 		this.#emitProgressEvent();
 	}

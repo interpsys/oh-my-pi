@@ -583,8 +583,9 @@ async function spillLargeResultToArtifact(
 	toolName: string,
 	context: AgentToolContext | undefined,
 ): Promise<AgentToolResult> {
+	// Eval-bridged calls return into kernel memory, not model context: no artifact, payload whole.
 	const sessionManager = context?.sessionManager;
-	if (!sessionManager) return result;
+	if (!sessionManager || context?.evalBridge) return result;
 	const { threshold, tailBytes, tailLines, headBytes } = getSpillConfig(context?.settings);
 
 	// Skip if tool already saved an artifact
@@ -713,20 +714,22 @@ async function spillLargeResultToArtifact(
 	const newMeta: OutputMeta = { ...existingMeta, truncation: truncationMeta };
 	const newDetails = { ...result.details, meta: newMeta };
 
-	// Prune the raw payload only MCP results duplicate into `details.rawContent`.
-	// Identify them by the required `serverName` + `mcpToolName` markers (the same
-	// signature the MCP renderer uses) so a property-name collision on an
-	// SDK/extension tool's intentionally unconstrained details can never trigger
-	// this transformation. Everything already stored elsewhere is dropped so
-	// `rawContent` cannot re-inflate the on-disk size: text blocks and
-	// `resource.text` are captured verbatim by the artifact, and image data
-	// survives on the result content (and eval's `images`). Resource URI/MIME/blob
+	// Prune the raw payload only MCP results duplicate into `details.rawContent`
+	// and `details.structuredContent`. Identify them by the required `serverName` +
+	// `mcpToolName` markers (the same signature the MCP renderer uses) so a
+	// property-name collision on an SDK/extension tool's intentionally
+	// unconstrained details can never trigger this transformation. Everything
+	// already stored elsewhere is dropped so neither can re-inflate live history
+	// or the on-disk size: `structuredContent` is rendered into the text the
+	// artifact holds, text blocks and `resource.text` are captured verbatim by the
+	// artifact, and image data survives on the result content. Resource URI/MIME/blob
 	// metadata has no other home, so it is retained.
 	if (
 		typeof newDetails.serverName === "string" &&
 		typeof newDetails.mcpToolName === "string" &&
 		Array.isArray(newDetails.rawContent)
 	) {
+		delete newDetails.structuredContent;
 		const structuredContent: unknown[] = [];
 		for (const block of newDetails.rawContent) {
 			if (!isRecord(block)) {

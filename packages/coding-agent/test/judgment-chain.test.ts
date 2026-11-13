@@ -2,7 +2,16 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import { Database } from "bun:sqlite";
 import * as path from "node:path";
 import type { ChatUsageEvent } from "@oh-my-pi/pi-agent-core";
-import type { Api, AssistantMessage, ChoiceQuestion, ImageContent, Model, NoulQuestion } from "@oh-my-pi/pi-ai";
+import type {
+	Api,
+	AssistantMessage,
+	ChoiceQuestion,
+	ImageContent,
+	JudgmentRequest,
+	JudgmentResult,
+	Model,
+	NoulQuestion,
+} from "@oh-my-pi/pi-ai";
 import * as ai from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { cfgJudgmentAttemptTimeoutMs, cfgModelRoles } from "@oh-my-pi/pi-coding-agent/config/model-settings";
@@ -1574,5 +1583,111 @@ describe("ChainJudge", () => {
 			["judgment", { usd: 0.01, inputUsd: 0.01, outputUsd: 0 }],
 			["judgment", { usd: 0.01, inputUsd: 0.01, outputUsd: 0 }],
 		]);
+	});
+});
+
+describe("JudgmentCache size cap", () => {
+	const MODEL = "typesafe/jev-preview";
+	const question: NoulQuestion = { type: "noul", instructions: "Is it fine?" };
+	const request = (i: number): JudgmentRequest => ({
+		state: { i, body: "x".repeat(2000) },
+		questions: { q: question },
+	});
+	const result = (noul: number): JudgmentResult =>
+		({
+			api: "typesafe",
+			provider: "typesafe",
+			model: "jev-1.13.0",
+			answers: { q: { type: "noul", noul } },
+			usage: { input: 10, output: 0, cost: { total: 0.01 } },
+		}) as unknown as JudgmentResult;
+	const fill = (cache: JudgmentCache, from: number, to: number) => {
+		for (let i = from; i < to; i++)
+			cache.record(MODEL, cache.lookup(MODEL, request(i)), request(i).questions, result(i / to));
+	};
+	const hits = (cache: JudgmentCache, i: number) => cache.lookup(MODEL, request(i)).answers.q !== undefined;
+
+	it("prunes the oldest states under the cap and keeps recent judgments answering", async () => {
+		using tempDir = TempDir.createSync("@omp-judgment-cache-cap-");
+		const dbPath = path.join(tempDir.path(), "judgment-cache.db");
+		const cap = 512 * 1024;
+		const cache = JudgmentCache.open(dbPath, cap);
+		fill(cache, 0, 600);
+		await cache.prune();
+
+		expect(cache.usedBytes()).toBeLessThanOrEqual(cap);
+		// Oldest-first: what survives is exactly the newest run of states, never empty.
+		const kept = Array.from({ length: 600 }, (_, i) => hits(cache, i));
+		const firstKept = kept.indexOf(true);
+		expect(firstKept).toBeGreaterThan(0);
+		expect(kept.slice(firstKept).every(Boolean)).toBeTrue();
+		expect(600 - firstKept).toBeGreaterThan(50);
+		// Writes and reads keep working after a prune.
+		fill(cache, 600, 601);
+		expect(cache.lookup(MODEL, request(600)).answers.q).toEqual({ type: "noul", noul: 600 / 601 });
+		cache.close();
+
+		using db = new Database(dbPath, { readonly: true });
+		expect(db.query<{ auto_vacuum: number }, []>("PRAGMA auto_vacuum").get()?.auto_vacuum).toBe(2);
+		// No orphans: every oracle and usage row still has its state.
+		expect(
+			db
+				.query<{ n: number }, []>(
+					"SELECT (SELECT count(*) FROM oracle WHERE state NOT IN (SELECT id FROM states)) + (SELECT count(*) FROM usage WHERE state NOT IN (SELECT id FROM states)) AS n",
+				)
+				.get()?.n,
+		).toBe(0);
+		expect(Bun.file(dbPath).size).toBeLessThanOrEqual(cap);
+	});
+
+	it("prunes automatically while recording", async () => {
+		using tempDir = TempDir.createSync("@omp-judgment-cache-cap-auto-");
+		const dbPath = path.join(tempDir.path(), "judgment-cache.db");
+		const cap = 256 * 1024;
+		const cache = JudgmentCache.open(dbPath, cap);
+		fill(cache, 0, 1200);
+		// Let the prunes the records started finish.
+		await cache.prune();
+		expect(cache.usedBytes()).toBeLessThanOrEqual(cap);
+		expect(hits(cache, 1199)).toBeTrue();
+		cache.close();
+	});
+
+	it("leaves a store under its cap untouched", async () => {
+		using tempDir = TempDir.createSync("@omp-judgment-cache-cap-under-");
+		const cache = JudgmentCache.open(path.join(tempDir.path(), "judgment-cache.db"), 64 * 1024 * 1024);
+		fill(cache, 0, 50);
+		expect(await cache.prune()).toBeUndefined();
+		for (let i = 0; i < 50; i++) expect(hits(cache, i)).toBeTrue();
+		cache.close();
+	});
+
+	it("rebuilds a store created without auto-vacuum once, returning its space to the filesystem", async () => {
+		using tempDir = TempDir.createSync("@omp-judgment-cache-cap-legacy-");
+		const dbPath = path.join(tempDir.path(), "judgment-cache.db");
+		// Grow the store under a generous cap, then force it to the pre-cap layout.
+		const unbounded = JudgmentCache.open(dbPath, 1024 ** 3);
+		fill(unbounded, 0, 600);
+		unbounded.close();
+		{
+			using db = new Database(dbPath);
+			db.run("PRAGMA auto_vacuum=NONE");
+			db.run("VACUUM");
+			expect(db.query<{ auto_vacuum: number }, []>("PRAGMA auto_vacuum").get()?.auto_vacuum).toBe(0);
+		}
+		const before = Bun.file(dbPath).size;
+		const cap = 512 * 1024;
+		expect(before).toBeGreaterThan(cap);
+
+		const cache = JudgmentCache.open(dbPath, cap);
+		const pruned = await cache.prune();
+		expect(pruned?.vacuumed).toBeTrue();
+		expect(pruned?.usedBytesAfter).toBeLessThanOrEqual(cap);
+		expect(hits(cache, 599)).toBeTrue();
+		cache.close();
+
+		expect(Bun.file(dbPath).size).toBeLessThanOrEqual(cap);
+		using db = new Database(dbPath, { readonly: true });
+		expect(db.query<{ auto_vacuum: number }, []>("PRAGMA auto_vacuum").get()?.auto_vacuum).toBe(2);
 	});
 });

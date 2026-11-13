@@ -65,16 +65,22 @@ interface BatchSession {
 	manager?: AsyncJobManager;
 }
 
-function makeSession(opts: { agentId?: string; jobs?: boolean; vision?: boolean; cwd?: string } = {}): BatchSession {
+function makeSession(
+	opts: { agentId?: string; jobs?: boolean; vision?: boolean; cwd?: string; fallback?: Model<Api> } = {},
+): BatchSession {
 	const settings = Settings.isolated({
 		"async.enabled": false,
 		"task.isolation.enabled": false,
 		modelRoles: { judge: "p/smol" },
+		...(opts.fallback ? { "retry.fallbackChains": { judge: [`p/${opts.fallback.id}`] } } : {}),
 	});
 	const authStorage = createInMemoryAuthStorage();
 	authStorage.keys.setRuntime("p", "test-key");
 	const modelRegistry = new ModelRegistry(authStorage, "/nonexistent/judgment-batch-models.yml");
-	vi.spyOn(modelRegistry, "getAvailable").mockReturnValue([opts.vision ? VISION : SMOL]);
+	vi.spyOn(modelRegistry, "getAvailable").mockReturnValue([
+		opts.vision ? VISION : SMOL,
+		...(opts.fallback ? [opts.fallback] : []),
+	]);
 	const session: Record<string, unknown> = {
 		cwd: opts.cwd ?? process.cwd(),
 		settings,
@@ -473,7 +479,7 @@ describe("judge_batch bridge", () => {
 			retries: 0,
 		});
 		expect(created.total).toBe(3);
-		expect(created.running).toBe(true);
+		expect(created).toMatchObject({ running: true, model: null, models: {} });
 
 		// Near-simultaneous settles coalesce into one drain instead of one round-trip each.
 		const first = await drain(session, created.id, 5_000);
@@ -504,12 +510,13 @@ describe("judge_batch bridge", () => {
 			failed: 1,
 			running: false,
 			model: "p/smol",
+			models: { "p/smol": 2 },
 		});
 		expect(final.error).toBeUndefined();
 		expect(await runEvalJudgmentBatch({ op: "results", id: created.id }, { session })).toEqual({
 			results: {
-				"0": { tests: { type: "bool", bool: 1 } },
-				"2": { tests: { type: "bool", bool: 0 } },
+				"0": { answers: { tests: { type: "bool", bool: 1 } }, model: "p/smol" },
+				"2": { answers: { tests: { type: "bool", bool: 0 } }, model: "p/smol" },
 			},
 		});
 		const failed = (await runEvalJudgmentBatch({ op: "failed", id: created.id }, { session })) as {
@@ -521,6 +528,22 @@ describe("judge_batch bridge", () => {
 		expect(job?.status).toBe("completed");
 		// Five attempts: a, three parse retries on b, c — cost counts every attempt, not settled items.
 		expect(job?.resultText).toMatch(/^judged 3\/3 · 1 failed · \$0\.0050 · p\/smol · [\d.]+s$/);
+	});
+
+	it("reports mixed with per-model counts when items settle on different judge models", async () => {
+		vi.spyOn(ai, "completeSimple").mockImplementation(async (model, context, options) => {
+			if (model.id === "smol" && JSON.stringify(context.messages).includes("state-b")) throw new Error("smol down");
+			const message = { ...reply("tests: yes"), model: model.id };
+			options?.onAttempt?.(message);
+			return message;
+		});
+		const { session } = makeSession({ fallback: { ...SMOL, id: "big", name: "big" } as Model<Api> });
+		const created = await create(session, ["state-a", "state-b"], { retries: 0 });
+		while ((await status(session, created.id)).running) await drain(session, created.id, 5_000);
+		expect(await status(session, created.id)).toMatchObject({ model: "mixed", models: { "p/smol": 1, "p/big": 1 } });
+		expect(await runEvalJudgmentBatch({ op: "results", id: created.id }, { session })).toMatchObject({
+			results: { "0": { model: "p/smol" }, "1": { model: "p/big" } },
+		});
 	});
 
 	it("retries an image-backed item once and preserves its prepared image for the answer", async () => {
@@ -709,8 +732,14 @@ async function runPythonJudgeBatchInSubprocess(tempDir: TempDir): Promise<Python
 		"import json",
 		"again = judge_batch.attach(b.id)",
 		"rest = await again.drain(timeout=0)",
-		'print(json.dumps({"rest": rest, "status": again.status()["done"], "results": sorted(again.results())}))',
+		'waited = judge_batch({"fast": "quick tests", "slow": "slow tests"}, Q)',
+		"async def observe():",
+		"    await waited",
+		'    return waited.status()["running"]',
+		"observers = await asyncio.gather(observe(), observe())",
+		'print(json.dumps({"rest": rest, "status": again.status()["done"], "results": sorted(again.results()), "awaited": [len(waited.results()), observers]}))',
 		"again.close()",
+		"waited.close()",
 	].join("\n");
 	await Bun.write(
 		scriptPath,
@@ -738,6 +767,9 @@ vi.spyOn(ai, "completeSimple").mockImplementation(async (_model, context) => {
 		? user.content.filter((block): block is ImageContent => block.type === "image")
 		: [];
 	if (images.length > 0) observedImageBlocks.push({ prompt, images });
+	// Real delays: both subprocess awaiters must already be blocked in drain when the fast item settles.
+	if (prompt.includes("quick")) await Bun.sleep(100);
+	if (prompt.includes("slow")) await Bun.sleep(400);
 	return {
 		role: "assistant",
 		api: "openai-responses",
@@ -796,7 +828,7 @@ describe("judge_batch() Python prelude", () => {
 				single: { tests: { type: "bool", bool: 1 } },
 			});
 			expect(String(one.id)).toMatch(/^jdgb-/);
-			expect(two).toEqual({ rest: [], status: 2, results: ["a", "b"] });
+			expect(two).toEqual({ rest: [], status: 2, results: ["a", "b"], awaited: [2, [false, false]] });
 			expect(one.image_items).toEqual({
 				"1": [true, { tests: { type: "bool", bool: 1 } }],
 				"'1'": [true, { tests: { type: "bool", bool: 1 } }],
