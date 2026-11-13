@@ -39,7 +39,7 @@ await judgeBatch(states, questions, { intent?, concurrency?, retries?, minOk?, i
     Same `questions` over every state (`{key: state}` or a list keyed by index), run and owned by the host — it outlives the cell.
     - `concurrency` is capped at 32.
     - `intent` is an optional nonempty progress/job label (default `"Judging"`).
-    Returns at once; pull settled items in bounded slices across cells:
+    Returns at once{{#if py}} (`b = await judge_batch(…)` instead waits until every item settled; then read `b.results()` / `b.failed()`){{/if}}; pull settled items in bounded slices across cells:
     - `await b.drain(timeout?)` (seconds; omitted waits for the next item) → {{#if py}}`[(key, item)]`{{else}}`[[key, item]]`{{/if}} settled since the last drain
       (`[]` on timeout or once the run is done; `item.ok` → `item.answers`, else `item.error`; `item.model` is the backend that answered; item failures never raise)
     - `{{#if py}}async for k, item in b.drain_iter(timeout){{else}}for await (const [k, item] of b.drainIter({ timeout })){{/if}}` until timeout or completion

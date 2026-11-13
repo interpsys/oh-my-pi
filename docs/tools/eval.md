@@ -169,36 +169,27 @@ Enabled extension preludes add globals (such as `browser`) with documentation at
 
 `await judge(state, questions)` returns answers keyed by question id. State is a nonempty string, JSON object, or JSON array. Questions have `type: "choice"`, `"bool"`, or `"score"` plus nonempty `instructions`: choice needs at least two label/rubric entries; score needs at least two ordered level descriptions; bool returns a probability in `.bool`, not a boolean. The session's `judge` role resolves the backend.
 
-For many states, Python's `await judge_batch(states, questions, concurrency=32, retries=1, min_ok=1, intent=None)` or JS's `await judgeBatch(states, questions, { concurrency?, retries?, minOk?, intent? })` creates a host-owned batch. States are a list/array (index keys) or keyed object. `await b.drain(...)` pulls newly settled `(key, item)` pairs with `item.answers` or `item.error`; Python takes `timeout` directly, JS takes `{ timeout }`. Item failures are retained, while whole-run failure raises after the drain cursor is exhausted. `status()`, `results()`, `failed()`, `cancel()`, and `close()` inspect/control the batch. Batches outlive cells and kernel resets; `judge_batch.attach(id)` / `judgeBatch.attach(id)` reconnects an owning session until close or owner disposal. Completion and judgment requests share a process-wide 32-request semaphore.
+For many states, Python's `judge_batch(states, questions, concurrency=32, retries=1, min_ok=1, intent=None)` or JS's `await judgeBatch(states, questions, { concurrency?, retries?, minOk?, intent? })` creates a host-owned batch. States are a list/array (index keys) or keyed object. Python's plain call returns at once and the batch drains across cells; `b = await judge_batch(...)` waits until every item settled and returns the batch, whose `b.results()` / `b.failed()` then hold everything. `await b.drain(...)` pulls newly settled `(key, item)` pairs with `item.answers` or `item.error`; Python takes `timeout` directly, JS takes `{ timeout }`. Item failures are retained, while whole-run failure raises after the drain cursor is exhausted. `status()`, `results()`, `failed()`, `cancel()`, and `close()` inspect/control the batch. Batches outlive cells and kernel resets; `judge_batch.attach(id)` / `judgeBatch.attach(id)` reconnects an owning session until close or owner disposal. Completion and judgment requests share a process-wide 32-request semaphore.
 
 The full helper reference is `xd://eval/judge`.
 
-### MCP structured results
+### MCP results
 
-MCP calls return an object with `text` and MCP-specific `details`. When the server
-supplies `structuredContent`, it is available as `details.structuredContent`:
+`tool.mcp__<server>_<tool>(args)` returns the payload itself, in Python and JS: the
+server's `structuredContent` when it sent one, else the result text JSON-decoded when
+it is JSON, else the text string. An MCP error result raises (Python `RuntimeError`,
+JS exception) with the error text.
 
 ```js
-const result = await tool.mcp__example_page({});
-if (result.hasError) throw new Error(result.text);
-const page = result.details.structuredContent;
-if (page === undefined) throw new Error("Server did not return structured data");
+const page = await tool.mcp__example_page({});
 console.log(page.next_cursor);
 ```
 
-Python callers use `result["details"].get("structuredContent")`. The property is
-absent when the server supplies no structured result; OMP does not infer it from
-JSON-looking text. Error results can also carry structured data, so check
-`hasError` before treating a payload as a successful result.
-
-`text` is the tool's rendering, including any JSON echo. `tool.*` calls skip the
-shared artifact spill: `text`, `details.structuredContent` and
-`details.rawContent` (the server's content blocks) arrive complete, so parse a
-large JSON body from `details.rawContent[0].text` or `details.structuredContent`. Use
-server-side pagination/bounds for large data and print only the fields needed
-by the model. The object is not validated against the server's output schema or
-treated as trusted. Ordinary tools keep their existing return shapes, including
-bare strings for text-only results without details.
+MCP image blocks still display. `tool.*` calls skip the shared artifact spill, so large payloads
+arrive complete; use server-side pagination/bounds and print only the fields needed by
+the model. The value is not validated against the server's output schema or treated as
+trusted. Ordinary tools keep their existing return shapes, including bare strings for
+text-only results without details.
 
 ### `completion()`
 
