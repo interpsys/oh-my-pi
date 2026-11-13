@@ -32,6 +32,8 @@ import { formatModelStringWithRouting, resolveModelOverride } from "../config/mo
 import type { Settings } from "../config/settings";
 import type { RetryErrorUpdate } from "../extensibility/shared-events";
 import { isEvalStateContext } from "../eval/state";
+import antigravityEmptyResponseRetryTemplate from "../prompts/system/antigravity-empty-response-retry.md" with { type: "text" };
+import antigravityInvalidArgumentRetryTemplate from "../prompts/system/antigravity-invalid-argument-retry.md" with { type: "text" };
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
 import malformedFunctionCallRetryTemplate from "../prompts/system/malformed-function-call-retry.md" with { type: "text" };
 import streamStallContinueTemplate from "../prompts/system/stream-stall-continue.md" with { type: "text" };
@@ -108,6 +110,7 @@ const EMPTY_STOP_MAX_RETRIES = 3;
 const MALFORMED_FUNCTION_CALL_MAX_RETRIES = 3;
 const STREAM_STALL_CONTINUE_MAX_RETRIES = 3;
 const GENERIC_ABORT_MAX_RETRIES = 2;
+const ANTIGRAVITY_REJECTION_MAX_RETRIES = 3;
 const SIBLING_UNBLOCK_BUFFER_MS = 1_000;
 const NON_WHITESPACE_RE = /\S/;
 const USAGE_PREFLIGHT_BLOCKED_PREFIX = "Usage preflight blocked:";
@@ -137,6 +140,31 @@ const GENERIC_ABORT_MESSAGES: Record<string, true> = {
 
 function hasNonWhitespace(value: string): boolean {
 	return NON_WHITESPACE_RE.test(value);
+}
+
+/**
+ * Antigravity Gemini failures that hit a request before any output and depend on
+ * its exact body: resending the same body fails again, one more turn clears it.
+ */
+type AntigravityRejection = "invalid-argument" | "empty-response";
+
+const ANTIGRAVITY_REJECTION_TEMPLATES: Record<AntigravityRejection, string> = {
+	"invalid-argument": antigravityInvalidArgumentRetryTemplate,
+	"empty-response": antigravityEmptyResponseRetryTemplate,
+};
+
+function classifyAntigravityRejection(errorMessage: string): AntigravityRejection | undefined {
+	if (
+		errorMessage.includes("Cloud Code Assist API error (400)") &&
+		errorMessage.includes("INVALID_ARGUMENT") &&
+		errorMessage.includes("Request contains an invalid argument.")
+	) {
+		return "invalid-argument";
+	}
+	// Every endpoint the provider tried, once each with this body, ended without
+	// output (a thought-only stop has its own message and the empty-stop guard).
+	if (errorMessage.includes("Cloud Code Assist API returned an empty response")) return "empty-response";
+	return undefined;
 }
 
 /**
@@ -419,6 +447,12 @@ export class TurnRecovery {
 	#unexpectedStopRetryCount = 0;
 	#malformedFunctionCallRetryCount = 0;
 	#streamStallContinueCount = 0;
+	#antigravityRejectionRetryCount = 0;
+	/**
+	 * Attempt of the same-model continuation (empty output, Antigravity rejection) last
+	 * announced by `auto_retry_start` and not yet closed by an `auto_retry_end`; 0 when none.
+	 */
+	#continuationRetryAttempt = 0;
 	#acceptTerminalEmptyStopForPrompt = false;
 	// Three fields sit near the word "serve" and are deliberately distinct:
 	// `#activeRetryFallback.served` gates the one-shot `retry_fallback_succeeded`
@@ -557,6 +591,7 @@ export class TurnRecovery {
 		this.#unexpectedStopRetryCount = 0;
 		this.#malformedFunctionCallRetryCount = 0;
 		this.#streamStallContinueCount = 0;
+		this.#antigravityRejectionRetryCount = 0;
 		this.#acceptTerminalEmptyStopForPrompt = false;
 		this.#activeFallbackCreditRedemption = undefined;
 	}
@@ -595,6 +630,8 @@ export class TurnRecovery {
 		// shake-and-retry. Back-to-back timeouts never reach this point, so the
 		// one-shot bound on an unchanged-request loop is unaffected.
 		this.#requestBodyReadTimeoutRecoveryPromptSequence = undefined;
+		// Likewise the Antigravity same-model continuation cap bounds consecutive rejections only.
+		this.#antigravityRejectionRetryCount = 0;
 		const model = this.#host.model();
 		if (model) {
 			const level = this.#host.thinkingLevel();
@@ -623,6 +660,7 @@ export class TurnRecovery {
 			});
 		}
 		if (this.#retryAttempt === 0) {
+			await this.#closeContinuationRetry({ success: true });
 			return;
 		}
 		await this.#closeRetrySaga(
@@ -633,9 +671,14 @@ export class TurnRecovery {
 
 	/** Closes a failed retry saga when no compaction continuation took ownership. */
 	async onErrorSettledWithoutRetry(message: AssistantMessage, compaction: RecoveryCompactionResult): Promise<void> {
-		if (message.stopReason !== "error" || this.#retryAttempt === 0 || compaction.continuationScheduled) return;
+		if (message.stopReason !== "error" || compaction.continuationScheduled) return;
+		if (this.#retryAttempt === 0) {
+			await this.#closeContinuationRetry({ success: false, finalError: message.errorMessage });
+			return;
+		}
 		const attempt = this.#retryAttempt;
 		this.#retryAttempt = 0;
+		this.#continuationRetryAttempt = 0;
 		await this.#host.emitSessionEvent({
 			type: "auto_retry_end",
 			success: false,
@@ -715,6 +758,76 @@ export class TurnRecovery {
 			generation: this.#host.promptGeneration(),
 		});
 		return true;
+	}
+
+	/**
+	 * Antigravity Gemini rejects or drops some request bodies before any output:
+	 * either with 400 INVALID_ARGUMENT, or with empty 200 streams after the
+	 * provider's own retries exhaust. Resending the same body repeats it;
+	 * remove the empty error turn, nudge the model to keep going on the same
+	 * model, and continue. Returns the rejection kind when it handled the turn.
+	 */
+	async handleAntigravityRejectedTurn(message: AssistantMessage): Promise<AntigravityRejection | undefined> {
+		const model = this.#host.model();
+		const rejection =
+			model?.provider === "google-antigravity" && model.identity.class === "gemini" && isEmptyErrorTurn(message)
+				? classifyAntigravityRejection(message.errorMessage ?? "")
+				: undefined;
+		if (!rejection) {
+			this.#antigravityRejectionRetryCount = 0;
+			return undefined;
+		}
+		if (!this.autoRetryEnabled || this.#host.abortInProgress() || this.#host.isDisposed()) return undefined;
+
+		this.#antigravityRejectionRetryCount++;
+		const attempt = this.#antigravityRejectionRetryCount;
+		if (attempt > ANTIGRAVITY_REJECTION_MAX_RETRIES) {
+			logger.warn("Antigravity kept failing the request before any output past the same-model retry cap", {
+				rejection,
+				attempts: attempt - 1,
+				model: message.model,
+				provider: message.provider,
+			});
+			this.#antigravityRejectionRetryCount = 0;
+			return undefined;
+		}
+
+		const delayMs = calculateRetryBackoffDelayMs(cfgRetry.get(this.#host.settings).baseDelayMs, attempt);
+		logger.info("Antigravity failed the request before any output; continuing on the same model", {
+			rejection,
+			attempt,
+			model: message.model,
+			provider: message.provider,
+		});
+		await this.#persistTerminalEmptyErrorTurn(message);
+		this.removeAssistantMessageFromActiveContext(message, `antigravity-${rejection}-continue`);
+		this.#host.agent.appendMessage({
+			role: "developer",
+			content: [
+				{
+					type: "text",
+					text: prompt.render(ANTIGRAVITY_REJECTION_TEMPLATES[rejection], {
+						retryCount: attempt,
+						maxRetries: ANTIGRAVITY_REJECTION_MAX_RETRIES,
+					}),
+				},
+			],
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
+		await this.#announceContinuationRetry({
+			attempt,
+			maxAttempts: ANTIGRAVITY_REJECTION_MAX_RETRIES,
+			delayMs,
+			errorMessage: message.errorMessage || "Unknown error",
+			errorId: message.errorId,
+		});
+		this.#host.scheduleAgentContinue({
+			source: `antigravity-${rejection}-retry`,
+			delayMs,
+			generation: this.#host.promptGeneration(),
+		});
+		return rejection;
 	}
 
 	/**
@@ -935,9 +1048,24 @@ export class TurnRecovery {
 			} finally {
 				this.#clearPendingRetryErrors();
 				this.#retryAttempt = 0;
+				this.#continuationRetryAttempt = 0;
 				this.resolveRetry();
 			}
 		}
+	}
+
+	async #announceContinuationRetry(
+		event: Omit<Extract<AgentSessionEvent, { type: "auto_retry_start" }>, "type">,
+	): Promise<void> {
+		this.#continuationRetryAttempt = event.attempt;
+		await this.#host.emitSessionEvent({ type: "auto_retry_start", ...event });
+	}
+
+	async #closeContinuationRetry(end: { success: boolean; finalError?: string }): Promise<void> {
+		const attempt = this.#continuationRetryAttempt;
+		if (attempt === 0) return;
+		this.#continuationRetryAttempt = 0;
+		await this.#host.emitSessionEvent({ type: "auto_retry_end", attempt, ...end });
 	}
 
 	#clearPendingRetryErrors(): void {
@@ -1143,6 +1271,7 @@ export class TurnRecovery {
 			});
 			this.#clearPendingRetryErrors();
 			this.#retryAttempt = 0;
+			this.#continuationRetryAttempt = 0;
 			this.resolveRetry();
 			// A turn with no actionable output carries no transcript value, while its
 			// provider usage can anchor the next prompt at the full failed-request size
@@ -1161,6 +1290,13 @@ export class TurnRecovery {
 			content: [{ type: "text", text: this.#emptyStopRetryReminder() }],
 			attribution: "agent",
 			timestamp: Date.now(),
+		});
+		await this.#announceContinuationRetry({
+			attempt: this.#emptyStopRetryCount,
+			maxAttempts: EMPTY_STOP_MAX_RETRIES,
+			delayMs: 0,
+			errorMessage: assistantMessage.errorMessage || "Assistant stopped without actionable output",
+			errorId: assistantMessage.errorId,
 		});
 		this.#host.scheduleAgentContinue({
 			source: "empty-stop-retry",
@@ -3168,6 +3304,8 @@ export class TurnRecovery {
 		// Quota resets elapse while the machine sleeps; capture the deadline before event delivery.
 		const usageResetDeadline = AIError.is(id, AIError.Flag.UsageLimit) ? Date.now() + delayMs : undefined;
 
+		// This saga's own `auto_retry_end` now closes any announced continuation it took over.
+		this.#continuationRetryAttempt = 0;
 		await this.#host.emitSessionEvent({
 			type: "auto_retry_start",
 			attempt: this.#retryAttempt,
@@ -3251,6 +3389,7 @@ export class TurnRecovery {
 	async #endCancelledRetry(): Promise<false> {
 		const attempt = this.#retryAttempt;
 		this.#retryAttempt = 0;
+		this.#continuationRetryAttempt = 0;
 		this.#retryAbortController = undefined;
 		await this.#host.emitSessionEvent({
 			type: "auto_retry_end",
@@ -3359,6 +3498,13 @@ export class TurnRecovery {
 		this.#retryAbortController?.abort();
 		// Note: _retryAttempt is reset in the catch block of _autoRetry
 		this.resolveRetry();
+		// A continuation waits in the session scheduler, not on this controller:
+		// close its announcement here, as `#endCancelledRetry` does for a saga.
+		void this.#closeContinuationRetry({ success: false, finalError: "Retry cancelled" }).catch(error =>
+			logger.error("Closing a cancelled continuation retry threw", {
+				error: error instanceof Error ? error.message : String(error),
+			}),
+		);
 	}
 
 	async #promptAgentWithIdleRetry(

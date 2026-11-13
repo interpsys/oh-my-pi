@@ -305,7 +305,7 @@ describe("AgentSession empty stop guard", () => {
 
 		expect(mock.calls).toHaveLength(4);
 		expect(reminderMessages(session.agent.state.messages)).toHaveLength(3);
-		expect(retryStartEvents).toHaveLength(0);
+		expect(retryStartEvents).toHaveLength(3);
 		expect(retryEndEvents).toHaveLength(1);
 		expect(retryEndEvents[0]).toMatchObject({
 			type: "auto_retry_end",
@@ -585,7 +585,7 @@ describe("AgentSession empty stop guard", () => {
 		expect(mock.calls).toHaveLength(5);
 		expect(session.isRetrying).toBe(false);
 		expect(session.retryAttempt).toBe(0);
-		expect(retryStartEvents).toHaveLength(1);
+		expect(retryStartEvents).toHaveLength(4);
 		expect(retryStartEvents[0]?.attempt).toBe(1);
 		expect(retryEndEvents.filter(event => event.success)).toEqual([]);
 		expect(retryEndEvents).toHaveLength(1);
@@ -614,8 +614,8 @@ describe("AgentSession empty stop guard", () => {
 		await session.waitForIdle();
 
 		expect(mock.calls).toHaveLength(8);
-		expect(retryStartEvents).toHaveLength(2);
-		expect(retryStartEvents[1]?.attempt).toBe(1);
+		expect(retryStartEvents).toHaveLength(5);
+		expect(retryStartEvents[4]?.attempt).toBe(1);
 		expect(retryEndEvents).toHaveLength(2);
 		expect(retryEndEvents[1]).toMatchObject({
 			type: "auto_retry_end",
