@@ -1364,10 +1364,11 @@ export const cfgProvidersStreamFirstEventTimeoutSeconds = register({
 		group: "Timeouts",
 		label: "Stream First Event Timeout",
 		description:
-			"Seconds to wait for the first model stream event; -1 uses provider/env defaults, 0 disables the watchdog",
+			"Seconds to wait for the first model stream event (CCA: first body byte, default 300s); -1 uses provider/env defaults, 0 disables the watchdog",
 		options: [
 			{ value: "-1", label: "Auto", description: "Use provider defaults and PI_* timeout env vars" },
 			{ value: "0", label: "Off", description: "Disable first-event timeout" },
+			{ value: "90", label: "90 seconds" },
 			{ value: "300", label: "5 minutes" },
 			{ value: "600", label: "10 minutes" },
 			{ value: "1800", label: "30 minutes" },
@@ -1384,10 +1385,11 @@ export const cfgProvidersStreamIdleTimeoutSeconds = register({
 		group: "Timeouts",
 		label: "Stream Idle Timeout",
 		description:
-			"Seconds a model stream may stay silent between events; -1 uses provider/env defaults, 0 disables the watchdog",
+			"Seconds a model stream may stay silent (CCA: between body chunks, default 300s); -1 uses provider/env defaults, 0 disables the watchdog",
 		options: [
 			{ value: "-1", label: "Auto", description: "Use provider defaults and PI_* timeout env vars" },
 			{ value: "0", label: "Off", description: "Disable idle timeout" },
+			{ value: "90", label: "90 seconds" },
 			{ value: "300", label: "5 minutes" },
 			{ value: "600", label: "10 minutes" },
 			{ value: "1800", label: "30 minutes" },

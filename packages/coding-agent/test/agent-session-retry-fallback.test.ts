@@ -17,6 +17,7 @@ import {
 	type ToolCall,
 } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { streamGoogleGeminiCli } from "@oh-my-pi/pi-ai/providers/google-gemini-cli";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { CodexApiError } from "@oh-my-pi/pi-ai/providers/openai-codex/response-handler";
 import { buildParams } from "@oh-my-pi/pi-ai/providers/openai-responses";
@@ -9448,5 +9449,546 @@ describe("AgentSession retry fallback", () => {
 
 		expect(requestedModels).toContain("openrouter/z-ai/glm-4.7@chutes");
 		expect(getLastAssistantMessage(session).stopReason).not.toBe("error");
+	});
+
+	describe("Antigravity Gemini same-model continuation", () => {
+		// Verbatim production error: the Cloud Code Assist envelope on an empty turn.
+		const invalidArgument =
+			'Cloud Code Assist API error (400): {\n  "error": {\n    "code": 400,\n    "message": "Request contains an invalid argument.",\n    "status": "INVALID_ARGUMENT"\n  }\n}';
+		// Verbatim production error once the provider's own empty-stream attempts are spent.
+		const emptyResponse =
+			'Cloud Code Assist API returned an empty response: {"candidates":1,"finishReason":null,"promptFeedback":null,"usageMetadata":{"promptTokenCount":88453,"totalTokenCount":88453,"cachedContentTokenCount":86404}}';
+		const fallbackSelector = "openai/gpt-4o-mini";
+
+		function developerTexts(messages: Message[]): string[] {
+			return messages
+				.filter(message => message.role === "developer")
+				.map(message =>
+					typeof message.content === "string"
+						? message.content
+						: message.content.map(part => (part.type === "text" ? part.text : "")).join(""),
+				);
+		}
+
+		beforeAll(() => {
+			authStorage.keys.setRuntime("google-antigravity", "google-antigravity-test-key");
+		});
+
+		afterAll(() => {
+			authStorage.keys.removeRuntime("google-antigravity");
+		});
+
+		async function promptWithPrimaryFailures(modelId: string, error: string | readonly string[], failures: number) {
+			const model = getBundledModel("google-antigravity", modelId);
+			if (!model) {
+				throw new Error(`Expected bundled google-antigravity/${modelId} to exist`);
+			}
+			const primary = `${model.provider}/${model.id}`;
+			const mock = createMockModel();
+			const requestedModels: string[] = [];
+			const requestContexts: Message[][] = [];
+			const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
+			let primaryFailures = 0;
+			const agent = new Agent({
+				getApiKey: requested => `${requested.provider}-test-key`,
+				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+				convertToLlm,
+				streamFn: (requested, context, options) => {
+					const selector = `${requested.provider}/${requested.id}`;
+					requestedModels.push(selector);
+					requestContexts.push([...context.messages]);
+					if (selector === primary && primaryFailures < failures) {
+						mock.push({ throw: typeof error === "string" ? error : error[primaryFailures % error.length] });
+						primaryFailures += 1;
+					} else {
+						mock.push({ content: [`ok:${selector}`] });
+					}
+					return mock.stream(requested, context, options);
+				},
+			});
+			const active = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings: Settings.isolated({
+					"compaction.enabled": false,
+					"retry.baseDelayMs": 5,
+					"retry.fallbackChains": { "google-antigravity/*": [fallbackSelector] },
+				}),
+				modelRegistry,
+			});
+			session = active;
+			active.subscribe(event => {
+				if (event.type === "retry_fallback_applied") fallbackAppliedEvents.push(event);
+			});
+
+			await active.prompt("Keep working on Antigravity");
+			await active.waitForIdle();
+			return { active, primary, requestedModels, requestContexts, fallbackAppliedEvents };
+		}
+
+		it("continues on the same Gemini model with a reminder instead of falling back", async () => {
+			const { active, primary, requestedModels, requestContexts, fallbackAppliedEvents } =
+				await promptWithPrimaryFailures("gemini-4-argon", invalidArgument, 1);
+
+			expect(requestedModels).toEqual([primary, primary]);
+			expect(fallbackAppliedEvents).toEqual([]);
+			// The empty failed turn is dropped; the appended reminder changes the request body.
+			expect(requestContexts[1].map(message => message.role)).toEqual(["user", "developer"]);
+			const reminder = requestContexts[1][1];
+			if (reminder.role !== "developer") throw new Error(`Expected developer, got ${reminder.role}`);
+			const reminderText =
+				typeof reminder.content === "string"
+					? reminder.content
+					: reminder.content.map(part => (part.type === "text" ? part.text : "")).join("");
+			expect(reminderText).toContain("INVALID_ARGUMENT");
+			expect(reminderText).toContain("Attempt #1/3");
+			expect(active.agent.state.messages.map(message => message.role)).toEqual(["user", "developer", "assistant"]);
+			expect(getLastAssistantMessage(active).stopReason).toBe("stop");
+		});
+
+		it("falls back once three consecutive same-model continuations are spent", async () => {
+			const { active, primary, requestedModels, fallbackAppliedEvents } = await promptWithPrimaryFailures(
+				"gemini-4-argon",
+				invalidArgument,
+				4,
+			);
+
+			expect(requestedModels).toEqual([primary, primary, primary, primary, fallbackSelector]);
+			expect(fallbackAppliedEvents).toHaveLength(1);
+			expect(fallbackAppliedEvents[0]).toMatchObject({ role: "google-antigravity/*" });
+			expect(getLastAssistantMessage(active).stopReason).toBe("stop");
+		});
+
+		it("leaves the Antigravity Claude route on the hard-error fallback", async () => {
+			const { primary, requestedModels } = await promptWithPrimaryFailures("claude-sonnet-4-6", invalidArgument, 1);
+
+			expect(requestedModels).toEqual([primary, fallbackSelector]);
+		});
+
+		it("leaves other Antigravity Gemini hard errors on the fallback chain", async () => {
+			const { primary, requestedModels } = await promptWithPrimaryFailures(
+				"gemini-4-argon",
+				"unrecoverable model quirk",
+				1,
+			);
+
+			expect(requestedModels).toEqual([primary, fallbackSelector]);
+		});
+
+		it("continues on the same Gemini model after an exhausted empty response", async () => {
+			const { active, primary, requestedModels, requestContexts, fallbackAppliedEvents } =
+				await promptWithPrimaryFailures("gemini-4-argon", emptyResponse, 1);
+
+			expect(requestedModels).toEqual([primary, primary]);
+			expect(fallbackAppliedEvents).toEqual([]);
+			expect(requestContexts[1].map(message => message.role)).toEqual(["user", "developer"]);
+			const [reminder] = developerTexts(requestContexts[1]);
+			expect(reminder).toContain("empty response");
+			expect(reminder).not.toContain("INVALID_ARGUMENT");
+			expect(reminder).toContain("Attempt #1/3");
+			expect(getLastAssistantMessage(active).stopReason).toBe("stop");
+		});
+
+		it("counts INVALID_ARGUMENT and empty responses against one consecutive cap", async () => {
+			const { active, primary, requestedModels, requestContexts, fallbackAppliedEvents } =
+				await promptWithPrimaryFailures("gemini-4-argon", [invalidArgument, emptyResponse], 4);
+
+			expect(requestedModels).toEqual([primary, primary, primary, primary, fallbackSelector]);
+			expect(fallbackAppliedEvents).toHaveLength(1);
+			const reminders = developerTexts(requestContexts[3]);
+			expect(reminders).toHaveLength(3);
+			expect(reminders[0]).toContain("INVALID_ARGUMENT");
+			expect(reminders[0]).toContain("Attempt #1/3");
+			expect(reminders[1]).toContain("empty response");
+			expect(reminders[1]).toContain("Attempt #2/3");
+			expect(reminders[2]).toContain("INVALID_ARGUMENT");
+			expect(reminders[2]).toContain("Attempt #3/3");
+			expect(getLastAssistantMessage(active).stopReason).toBe("stop");
+		});
+
+		it("leaves Antigravity Claude empty responses on the hard-error fallback", async () => {
+			const { primary, requestedModels } = await promptWithPrimaryFailures("claude-sonnet-4-6", emptyResponse, 1);
+
+			expect(requestedModels).toEqual([primary, fallbackSelector]);
+		});
+	});
+
+	describe("Cloud Code Assist exhausted empty responses", () => {
+		const fallbackSelector = "openai/gpt-4o-mini";
+		const savedAntigravityVersion = process.env.PI_AI_ANTIGRAVITY_VERSION;
+		// Verbatim production frame (BnModalRunner, 2026-11-09T04:27:24Z; signature shortened): one
+		// candidate whose only part is an empty text carrying a thought signature, no finishReason,
+		// and no output tokens. Every attempt of the failed turn ended after this single frame.
+		const signatureOnlyFrame = {
+			response: {
+				candidates: [{ content: { role: "model", parts: [{ thoughtSignature: "EooCCocCAWkU", text: "" }] } }],
+				usageMetadata: { promptTokenCount: 88453, totalTokenCount: 88453, cachedContentTokenCount: 86404 },
+				modelVersion: "gemini-4-argon",
+				responseId: "ikvxarqrL9jqz7IPhsKH0Qk",
+			},
+			traceId: "6594c9bcb938d66e",
+			metadata: {},
+		};
+		// Verbatim production frame (BnQwenKL wake turn, 2026-11-09T05:13Z): the same zero-output
+		// stream, but an empty text without a signature and a `STOP` finish.
+		const stopEmptyFrame = {
+			response: {
+				candidates: [{ content: { role: "model", parts: [{ text: "" }] }, finishReason: "STOP" }],
+				usageMetadata: { promptTokenCount: 91847, totalTokenCount: 91847, cachedContentTokenCount: 89798 },
+				modelVersion: "gemini-4-argon",
+				responseId: "RVbxas7-D_HxqtsPuY35qA0",
+			},
+			traceId: "d6d1b975107fc55a",
+			metadata: {},
+		};
+
+		function sseResponse(...frames: unknown[]): Response {
+			const body = frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join("");
+			return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+		}
+
+		function textFrame(text: string) {
+			return {
+				response: {
+					candidates: [{ content: { role: "model", parts: [{ text }] }, finishReason: "STOP" }],
+					usageMetadata: { promptTokenCount: 88470, candidatesTokenCount: 3, totalTokenCount: 88473 },
+				},
+			};
+		}
+
+		function messageText(message: Message): string {
+			if (typeof message.content === "string") return message.content;
+			return message.content.map(part => (part.type === "text" ? part.text : "")).join("");
+		}
+
+		beforeAll(() => {
+			authStorage.keys.setRuntime("google-antigravity", JSON.stringify({ token: "token", projectId: "proj-123" }));
+		});
+
+		afterAll(() => {
+			authStorage.keys.removeRuntime("google-antigravity");
+		});
+
+		beforeEach(() => {
+			process.env.PI_AI_ANTIGRAVITY_VERSION = "2.19.1";
+		});
+
+		afterEach(() => {
+			if (savedAntigravityVersion === undefined) delete process.env.PI_AI_ANTIGRAVITY_VERSION;
+			else process.env.PI_AI_ANTIGRAVITY_VERSION = savedAntigravityVersion;
+		});
+
+		/**
+		 * Runs one prompt on Antigravity Gemini 4 Argon through the real Cloud Code Assist stream,
+		 * then, given `wakeBody`, an idle IRC wake turn carrying it (a parent's `write agent://`).
+		 */
+		async function runCcaSession(
+			respond: (fetchCall: number) => Response,
+			fallbackChains?: Record<string, string[]>,
+			wakeBody?: string,
+		) {
+			const baseModel = getBundledModel<"google-gemini-cli">("google-antigravity", "gemini-4-argon");
+			if (!baseModel) throw new Error("Expected bundled google-antigravity/gemini-4-argon to exist");
+			const endpoint = "https://custom-cca.example.com";
+			const model: Model<"google-gemini-cli"> = { ...baseModel, baseUrl: endpoint };
+			const primary = `${model.provider}/${model.id}`;
+			const mock = createMockModel();
+			const requestedModels: string[] = [];
+			const requestContexts: Message[][] = [];
+			const priorTaskMessage: Message = {
+				role: "user",
+				content: "Prior task context that must remain intact",
+				timestamp: 1,
+			};
+			let fetchCalls = 0;
+			let onModelRequest: (() => void) | undefined;
+
+			const agent = new Agent({
+				getApiKey: requested =>
+					requested.provider === "google-antigravity"
+						? JSON.stringify({ token: "token", projectId: "proj-123" })
+						: `${requested.provider}-test-key`,
+				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [priorTaskMessage] },
+				convertToLlm,
+				streamFn: (requested, context, options) => {
+					const selector = `${requested.provider}/${requested.id}`;
+					requestedModels.push(selector);
+					requestContexts.push([...context.messages]);
+					onModelRequest?.();
+					if (selector === primary) {
+						return streamGoogleGeminiCli(model, context, {
+							...options,
+							apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
+							fetch: async () => {
+								fetchCalls += 1;
+								if (fetchCalls > 12) {
+									throw new Error(`Fetch loop bound exceeded (${fetchCalls} calls)`);
+								}
+								const response = respond(fetchCalls);
+								Object.defineProperty(response, "url", {
+									value: `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
+								});
+								return response;
+							},
+						});
+					}
+					mock.push({ content: [`ok:${selector}`] });
+					return mock.stream(requested, context, options);
+				},
+			});
+
+			const sessionManager = SessionManager.inMemory();
+			const active = new AgentSession({
+				agent,
+				sessionManager,
+				settings: Settings.isolated({
+					"compaction.enabled": false,
+					"retry.baseDelayMs": 5,
+					"retry.maxRetries": 40,
+					...(fallbackChains ? { "retry.fallbackChains": fallbackChains } : {}),
+				}),
+				modelRegistry,
+			});
+			session = active;
+			mockSchedulerWaitWithClock();
+			const { retryStartEvents, retryEndEvents } = trackRetryEvents(active);
+
+			await active.prompt("Finish the current step");
+			await active.waitForIdle();
+			if (wakeBody !== undefined) {
+				const wakeDispatched = Promise.withResolvers<void>();
+				onModelRequest = wakeDispatched.resolve;
+				const delivery = await active.deliverIrcMessage({
+					id: "parent-wake",
+					from: "Main",
+					to: "Worker",
+					body: wakeBody,
+					ts: Date.now(),
+				});
+				if (delivery !== "woken") throw new Error(`Expected an idle wake turn, got ${delivery}`);
+				// The wake turn dispatches after an async hop: settle it once it has reached the model.
+				await wakeDispatched.promise;
+				await active.waitForIdle();
+			}
+			return {
+				active,
+				sessionManager,
+				primary,
+				requestedModels,
+				requestContexts,
+				fetchCalls,
+				retryStartEvents,
+				retryEndEvents,
+			};
+		}
+
+		it.each([
+			{ name: "signature-only frame without finishReason", frame: signatureOnlyFrame, finishReason: "null" },
+			{ name: "empty text frame with STOP", frame: stopEmptyFrame, finishReason: '"STOP"' },
+		])(
+			"continues on the same Gemini model with a reminder after an empty response: $name",
+			async ({ frame, finishReason }) => {
+				const { active, sessionManager, primary, requestedModels, requestContexts, fetchCalls, retryEndEvents } =
+					await runCcaSession(fetchCall => sseResponse(fetchCall === 1 ? frame : textFrame("Recovered.")));
+
+				// One provider request on the original body, then one continuation with a changed body.
+				expect(fetchCalls).toBe(2);
+				// The continuation is announced like any retry and closed by its recovery.
+				expect(retryEndEvents).toEqual([expect.objectContaining({ success: true, attempt: 1 })]);
+				expect(requestedModels).toEqual([primary, primary]);
+				expect(requestContexts[1].map(message => message.role)).toEqual(["user", "user", "developer"]);
+				const reminderText = messageText(requestContexts[1][2]);
+				expect(reminderText).toContain("empty response");
+				expect(reminderText).toContain("Attempt #1/3");
+				expect(active.agent.state.messages.map(message => message.role)).toEqual([
+					"user",
+					"user",
+					"developer",
+					"assistant",
+				]);
+				const finalAssistant = getLastAssistantMessage(active);
+				expect(finalAssistant.stopReason).toBe("stop");
+				expect(finalAssistant.content).toMatchObject([{ type: "text", text: "Recovered." }]);
+				// The failed turn stays in the session log, out of the active context.
+				const persistedErrors = sessionManager
+					.getEntries()
+					.filter(
+						entry =>
+							entry.type === "message" &&
+							entry.message.role === "assistant" &&
+							entry.message.stopReason === "error",
+					);
+				expect(persistedErrors).toHaveLength(1);
+				const persistedError = persistedErrors[0];
+				if (persistedError?.type !== "message" || persistedError.message.role !== "assistant") {
+					throw new Error("Expected a persisted assistant error turn");
+				}
+				expect(persistedError.message.errorMessage).toContain("Cloud Code Assist API returned an empty response");
+				expect(persistedError.message.errorMessage).toContain(`"finishReason":${finishReason}`);
+			},
+		);
+
+		it("continues an IRC wake turn on the same Gemini model after the provider's empty response", async () => {
+			const wakeBody = "Parent asks: report the current status.";
+			const { active, primary, requestedModels, requestContexts, fetchCalls } = await runCcaSession(
+				fetchCall =>
+					sseResponse(
+						fetchCall === 1
+							? textFrame("Step finished.")
+							: fetchCall === 2
+								? signatureOnlyFrame
+								: textFrame("Recovered after wake."),
+					),
+				undefined,
+				wakeBody,
+			);
+
+			// The first run answers; the wake turn's one provider request ends empty; one continuation.
+			expect(fetchCalls).toBe(3);
+			expect(requestedModels).toEqual([primary, primary, primary]);
+			const continuation = requestContexts[2];
+			if (!continuation) throw new Error("Expected a continuation request after the wake turn");
+			const reminder = continuation.at(-1);
+			if (!reminder) throw new Error("Expected a reminder at the end of the continuation request");
+			expect(reminder.role).toBe("developer");
+			expect(messageText(reminder)).toContain("empty response");
+			expect(messageText(reminder)).toContain("Attempt #1/3");
+			// The parent's message stays in context for the continuation; the failed turn does not.
+			expect(JSON.stringify(continuation)).toContain(wakeBody);
+			expect(continuation.some(message => message.role === "assistant" && message.stopReason === "error")).toBe(
+				false,
+			);
+			const finalAssistant = getLastAssistantMessage(active);
+			expect(finalAssistant.stopReason).toBe("stop");
+			expect(finalAssistant.content).toMatchObject([{ type: "text", text: "Recovered after wake." }]);
+		});
+
+		it("terminates after three same-model continuations without restarting outer session retry", async () => {
+			const { active, primary, requestedModels, requestContexts, fetchCalls, retryStartEvents } =
+				await runCcaSession(() => sseResponse(signatureOnlyFrame));
+
+			// One provider request for the original body and for each of three continuations;
+			// retry.maxRetries (40) never multiplies them.
+			expect(fetchCalls).toBe(4);
+			expect(retryStartEvents.map(event => [event.attempt, event.maxAttempts])).toEqual([
+				[1, 3],
+				[2, 3],
+				[3, 3],
+			]);
+			expect(requestedModels).toEqual([primary, primary, primary, primary]);
+			expect(requestContexts[3].map(message => message.role)).toEqual([
+				"user",
+				"user",
+				"developer",
+				"developer",
+				"developer",
+			]);
+			expect(active.agent.state.messages[0]).toMatchObject({
+				role: "user",
+				content: "Prior task context that must remain intact",
+			});
+			const finalAssistant = getLastAssistantMessage(active);
+			expect(finalAssistant.stopReason).toBe("error");
+			expect(finalAssistant.errorMessage).toContain("Cloud Code Assist API returned an empty response");
+			expect(finalAssistant.errorMessage).toContain('"finishReason":null');
+		});
+
+		it("switches once to configured fallback after the same-model continuations are spent", async () => {
+			const { active, primary, requestedModels, requestContexts, fetchCalls } = await runCcaSession(
+				() => sseResponse(signatureOnlyFrame),
+				{ "google-antigravity/*": [fallbackSelector] },
+			);
+
+			expect(fetchCalls).toBe(4);
+			expect(requestedModels).toEqual([primary, primary, primary, primary, fallbackSelector]);
+			expect(requestContexts[4][0]).toMatchObject({
+				role: "user",
+				content: "Prior task context that must remain intact",
+			});
+			const finalAssistant = getLastAssistantMessage(active);
+			expect(finalAssistant.stopReason).toBe("stop");
+			expect(finalAssistant.content).toEqual([{ type: "text", text: `ok:${fallbackSelector}` }]);
+		});
+
+		// Declines and auth failures are not request-body faults: they keep their existing path.
+		const terminalFailures = [
+			{
+				name: "SAFETY finish",
+				respond: () =>
+					sseResponse({ response: { candidates: [{ content: { parts: [] }, finishReason: "SAFETY" }] } }),
+				errorText: "SAFETY",
+			},
+			{
+				name: "PROHIBITED_CONTENT prompt block",
+				respond: () =>
+					sseResponse({
+						response: {
+							candidates: [],
+							promptFeedback: { blockReason: "PROHIBITED_CONTENT", blockReasonMessage: "policy blocked" },
+						},
+					}),
+				errorText: "PROHIBITED_CONTENT",
+			},
+			{
+				name: "HTTP 401",
+				respond: () =>
+					new Response(
+						JSON.stringify({
+							error: {
+								code: 401,
+								message: "Request had invalid authentication credentials.",
+								status: "UNAUTHENTICATED",
+							},
+						}),
+						{ status: 401 },
+					),
+				errorText: "401",
+			},
+			{
+				name: "HTTP 403 account verification",
+				respond: () =>
+					new Response(
+						JSON.stringify({
+							error: {
+								code: 403,
+								status: "PERMISSION_DENIED",
+								details: [
+									{
+										"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+										reason: "VALIDATION_REQUIRED",
+										metadata: { validation_url: "https://accounts.google.com/verify" },
+									},
+								],
+							},
+						}),
+						{ status: 403 },
+					),
+				errorText: "Account verification required",
+			},
+		];
+
+		it.each(terminalFailures)(
+			"surfaces a $name without a same-model continuation",
+			async ({ respond, errorText }) => {
+				const { active, primary, requestedModels, requestContexts, fetchCalls } = await runCcaSession(respond);
+
+				expect(fetchCalls).toBe(1);
+				expect(requestedModels).toEqual([primary]);
+				expect(requestContexts.flat().some(message => message.role === "developer")).toBe(false);
+				const finalAssistant = getLastAssistantMessage(active);
+				expect(finalAssistant.stopReason).toBe("error");
+				expect(finalAssistant.errorMessage).toContain(errorText);
+			},
+		);
+
+		it.each(terminalFailures)("sends a $name to the configured fallback chain", async ({ respond }) => {
+			const { primary, requestedModels, requestContexts, fetchCalls } = await runCcaSession(respond, {
+				"google-antigravity/*": [fallbackSelector],
+			});
+
+			expect(requestedModels).toEqual([primary, fallbackSelector]);
+			expect(fetchCalls).toBe(1);
+			expect(requestContexts.flat().some(message => message.role === "developer")).toBe(false);
+		});
 	});
 });

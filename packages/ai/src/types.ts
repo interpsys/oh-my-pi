@@ -1344,6 +1344,15 @@ export interface AssistantMessage {
 	 */
 	upstreamModel?: string;
 	/**
+	 * Model id the provider response itself reported for this turn (Anthropic
+	 * `message_start.message.model`, Gemini `modelVersion`, OpenAI Responses
+	 * `response.model`, Chat Completions chunk `model`). Never copied from the
+	 * request: absent when the response carries no model. Telemetry evidence of
+	 * the executed model; unlike `upstreamModel` it does not steer replay or
+	 * mismatch detection, because providers echo dated or aliased ids.
+	 */
+	responseModel?: string;
+	/**
 	 * Service tier the provider reported serving this turn, when the API echoes
 	 * one (`response.service_tier`), falling back to the tier the request carried
 	 * when the response omits the echo. Absent when the provider reports no tier

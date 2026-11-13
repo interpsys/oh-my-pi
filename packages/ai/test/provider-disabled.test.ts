@@ -109,3 +109,12 @@ describe("a provider disabled in its auth rules", () => {
 		}
 	});
 });
+
+// Fork decision (2026-11-09): Google Antigravity stays enabled, watched by the
+// account-ban alert to MTS instead of paused upstream's way.
+describe("Google Antigravity", () => {
+	test("is not paused by its auth rules and offers its login", () => {
+		expect(compatAuth.providerDisabledReason("google-antigravity")).toBeUndefined();
+		expect(getOAuthProviders().some(provider => provider.id === "google-antigravity")).toBe(true);
+	});
+});

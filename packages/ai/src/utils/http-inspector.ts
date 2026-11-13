@@ -21,6 +21,28 @@ export type CapturedHttpErrorResponse = {
 	bodyJson?: unknown;
 };
 
+export type RawEmptyResponseSseEvent = {
+	event: string | null;
+	data: string;
+	raw: string[];
+	parsed?: unknown;
+};
+
+export type RawEmptyResponseDump = {
+	provider: string;
+	api: string;
+	model: string;
+	endpoint?: string;
+	url?: string;
+	status?: number;
+	headers?: Record<string, string>;
+	events: RawEmptyResponseSseEvent[];
+	chunks?: unknown[];
+	truncated?: boolean;
+	omittedEvents?: number;
+	omittedBytes?: number;
+};
+
 /**
  * Matches any header name whose value carries a credential, so a persisted dump
  * never leaks one. A substring match — not a hand-maintained allow-list — so
@@ -62,20 +84,28 @@ export function shouldDumpRejectedRequest(error: unknown): boolean {
 
 const RAW_HTTP_REQUEST_LINE = "raw-http-request=";
 const RAW_HTTP_REQUEST_SAVE_FAILED_LINE = "raw-http-request-save-failed=";
+const RAW_EMPTY_RESPONSE_LINE = "raw-empty-response=";
+const RAW_EMPTY_RESPONSE_SAVE_FAILED_LINE = "raw-empty-response-save-failed=";
+
+function isDiagnosticDumpLine(line: string): boolean {
+	return (
+		line.startsWith(RAW_HTTP_REQUEST_LINE) ||
+		line.startsWith(RAW_HTTP_REQUEST_SAVE_FAILED_LINE) ||
+		line.startsWith(RAW_EMPTY_RESPONSE_LINE) ||
+		line.startsWith(RAW_EMPTY_RESPONSE_SAVE_FAILED_LINE)
+	);
+}
 
 /**
- * Remove the local request-dump lines {@link appendRawHttpRequestDumpFor400} appends,
- * leaving only the provider-facing error text. Hosts that relay provider errors
- * (RPC `prompt_result`) must not leak OMP-local file paths.
+ * Remove the local request/response-dump lines {@link appendRawHttpRequestDumpFor400}
+ * and {@link appendRawEmptyResponseDump} append, leaving only the provider-facing
+ * error text. Hosts that relay provider errors (RPC `prompt_result`) must not
+ * leak OMP-local file paths.
  */
 export function stripRawHttpRequestDiagnostics(message: string): string {
 	const lines = message.split("\n");
 	let end = lines.length;
-	while (
-		end > 0 &&
-		(lines[end - 1].startsWith(RAW_HTTP_REQUEST_LINE) || lines[end - 1].startsWith(RAW_HTTP_REQUEST_SAVE_FAILED_LINE))
-	)
-		end--;
+	while (end > 0 && isDiagnosticDumpLine(lines[end - 1])) end--;
 	return end === lines.length ? message : lines.slice(0, end).join("\n");
 }
 
@@ -108,6 +138,56 @@ export async function appendRawHttpRequestDumpFor400(
 }
 
 const HTTP_DUMP_DIR_NAME = "http-400-requests";
+const EMPTY_RESPONSE_DUMP_DIR_NAME = "empty-responses";
+export const RAW_EMPTY_RESPONSE_MAX_EVENTS = 64;
+export const RAW_EMPTY_RESPONSE_MAX_BYTES = 256 * 1024;
+
+export function buildEmptyResponseDumpPayload(
+	dump: RawEmptyResponseDump,
+	message: string,
+): RawEmptyResponseDump & { errorResponse: { status: number | undefined; message: string } } {
+	return {
+		...dump,
+		endpoint: redactUrlQuery(dump.endpoint),
+		url: redactUrlQuery(dump.url),
+		headers: redactHeaders(dump.headers),
+		errorResponse: { status: dump.status, message },
+	};
+}
+
+export interface AppendRawEmptyResponseDumpOptions {
+	dumpDir?: string;
+	allowInTest?: boolean;
+}
+
+export async function appendRawEmptyResponseDump(
+	message: string,
+	dump: RawEmptyResponseDump | undefined,
+	options?: AppendRawEmptyResponseDumpOptions,
+): Promise<string> {
+	if (!dump) return message;
+	if (isBunTestRuntime() && !options?.allowInTest && !options?.dumpDir) {
+		return message;
+	}
+
+	const payload = buildEmptyResponseDumpPayload(dump, message);
+	const serialized = `${JSON.stringify(payload, null, 2)}\n`;
+	const fileName = `${Date.now()}-${Bun.hash(serialized).toString(36)}.json`;
+	const dumpDir = options?.dumpDir ?? path.join(getLogsDir(), EMPTY_RESPONSE_DUMP_DIR_NAME);
+	const filePath = path.join(dumpDir, fileName);
+
+	try {
+		await fs.mkdir(dumpDir, { recursive: true, mode: 0o700 });
+		await fs.writeFile(filePath, serialized, { mode: 0o600 });
+		pruneHttpRequestDumps(dumpDir, { keep: fileName }).catch(err => {
+			logger.warn("Failed to prune empty response dumps", { dir: dumpDir, err });
+		});
+		return `${message}\n${RAW_EMPTY_RESPONSE_LINE}${filePath}`;
+	} catch (writeError) {
+		const writeMessage = writeError instanceof Error ? writeError.message : String(writeError);
+		return `${message}\n${RAW_EMPTY_RESPONSE_SAVE_FAILED_LINE}${writeMessage}`;
+	}
+}
 const HTTP_DUMP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const HTTP_DUMP_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
 

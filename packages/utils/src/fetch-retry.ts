@@ -308,6 +308,12 @@ export interface FetchWithRetryOptions extends RequestInit {
 	 */
 	shouldRetryResponse?: (response: Response, bodyText: string, attempt: number) => boolean | Promise<boolean>;
 	/**
+	 * Optional retry gate for errors thrown by `fetch`. Return `false` to
+	 * rethrow the error at once instead of retrying it. Default retries every
+	 * thrown error until `maxAttempts`; caller aborts are never retried.
+	 */
+	shouldRetryError?: (error: unknown, attempt: number) => boolean;
+	/**
 	 * Bun extension forwarded verbatim to the underlying `fetch` call. `false`
 	 * disables Bun's native ~300s pre-response timeout (callers that own a
 	 * configurable first-event/idle watchdog or an external `AbortSignal`
@@ -339,6 +345,7 @@ export async function fetchWithRetry(
 		defaultDelayMs,
 		prepareInit,
 		shouldRetryResponse,
+		shouldRetryError,
 		fetch: fetchImpl = fetch,
 		timeout = false,
 		...baseInit
@@ -367,7 +374,7 @@ export async function fetchWithRetry(
 		} catch (error) {
 			if (signal?.aborted) throw new Error("Request was aborted");
 			const wrapped = wrapNetworkError(error);
-			if (attempt + 1 >= maxAttempts) throw wrapped;
+			if (attempt + 1 >= maxAttempts || (shouldRetryError && !shouldRetryError(error, attempt))) throw wrapped;
 			await waitForRetry(resolveDefaultDelay(defaultDelayMs, attempt, maxDelayMs), signal);
 			continue;
 		}

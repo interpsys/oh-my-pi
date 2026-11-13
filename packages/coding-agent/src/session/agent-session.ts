@@ -5279,6 +5279,18 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				return;
 			}
 			const requestBodyTimeoutTerminal = requestBodyTimeoutRecovery === "handled-terminal";
+			// Antigravity's Gemini route fails some request bodies before any output (a bare
+			// 400 INVALID_ARGUMENT, or empty 200 streams once the provider's own retries are
+			// spent) and resending the same body repeats it; continue on the same model with a
+			// changed body before the generic retry or the fallback chain sees it.
+			const antigravityRejection = requestBodyTimeoutTerminal
+				? undefined
+				: await this.#recovery.handleAntigravityRejectedTurn(msg);
+			if (antigravityRejection) {
+				maintenanceRoute(`antigravity-${antigravityRejection}-continued`);
+				await emitAgentEndNotification({ willContinue: true });
+				return;
+			}
 			// Fireworks Fast variants degrade to their base model on a failed turn —
 			// including hard router errors the generic retry classifier rejects — so
 			// run this gate before the standard retryability check.
