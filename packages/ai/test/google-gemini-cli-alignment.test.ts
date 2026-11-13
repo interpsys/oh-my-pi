@@ -782,7 +782,7 @@ describe("Google Gemini CLI alignment", () => {
 	});
 
 	describe("planning leak interception", () => {
-		it("intercepts a fragmented planning leak and retries after discarding it", async () => {
+		it("discards a fragmented planning-only reply and surfaces it for session recovery", async () => {
 			const sseChunks = [
 				'data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"{\\n"}]}}]}}\n\n',
 				'data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"  \\"thought\\": \\"let us do something\\",\\n"}]}}]}}\n\n',
@@ -829,13 +829,13 @@ describe("Google Gemini CLI alignment", () => {
 			}
 			const result = await stream.result();
 
-			expect(fetchCalls).toBe(2);
-			expect(result.content).toEqual([{ type: "text", text: "Recovered." }]);
-			expect(result.stopReason).toBe("stop");
+			expect(fetchCalls).toBe(1);
+			expect(result.content).toEqual([]);
+			expect(result.stopReason).toBe("error");
+			expect(result.errorMessage).toStartWith("Cloud Code Assist API returned an empty response: ");
 
 			const textDeltaEvents = events.filter(e => e.type === "text_delta");
-			expect(textDeltaEvents).toHaveLength(1);
-			expect(textDeltaEvents[0].delta).toBe("Recovered.");
+			expect(textDeltaEvents).toHaveLength(0);
 		});
 
 		it("does not intercept normal JSON starting with { and releases it", async () => {
