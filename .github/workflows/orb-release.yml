@@ -60,7 +60,7 @@ jobs:
       needs: [resolve]
       if: needs.resolve.outputs.tag != ''
       runs-on: ${{ matrix.os }}
-      timeout-minutes: 45
+      timeout-minutes: 90
       strategy:
          fail-fast: false
          matrix:
@@ -86,6 +86,7 @@ jobs:
               ref: ${{ needs.resolve.outputs.tag }}
          - uses: ./.github/actions/bun-install
          - name: Ensure Rust toolchain
+           if: matrix.target_id != 'linux-x64'
            shell: bash
            run: |
               set -euo pipefail
@@ -95,7 +96,26 @@ jobs:
                 export PATH="$HOME/.cargo/bin:$PATH"
               fi
               rustup show
+         - id: bazel_cache
+           if: matrix.target_id == 'linux-x64'
+           uses: ./.github/actions/bazel-cache
+         - name: Build linux-x64 native addons (baseline + modern)
+           if: matrix.target_id == 'linux-x64'
+           shell: bash
+           env:
+              OMP_BAZEL_RC: ${{ steps.bazel_cache.outputs.rc }}
+           run: |
+              set -euo pipefail
+              if [ "$(ulimit -Sn)" != unlimited ] && [ "$(ulimit -Sn)" -lt 65536 ]; then ulimit -Sn 65536 || true; fi
+              if [ -d /usr/local/lib/android ]; then sudo rm -rf /usr/local/lib/android || true; fi
+              for target in linux-x64-baseline linux-x64-modern; do
+                bun scripts/bazel-natives.ts "$target" --dest packages/natives/native
+              done
+              ls -la packages/natives/native/pi_natives.linux-x64-*.node
+              test -f packages/natives/native/pi_natives.linux-x64-baseline.node
+              test -f packages/natives/native/pi_natives.linux-x64-modern.node
          - name: Build host native addon
+           if: matrix.target_id != 'linux-x64'
            env:
               OMP_NATIVE_CARGO_PROFILE: ci
            run: bun --cwd=packages/natives run build
@@ -107,6 +127,7 @@ jobs:
            shell: bash
            env:
               BINARY: ${{ matrix.binary_path }}
+              TARGET_ID: ${{ matrix.target_id }}
            run: |
               set -euo pipefail
               chmod +x "$BINARY"
@@ -116,6 +137,11 @@ jobs:
               runtime_dir="$(mktemp -d)"
               HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "$BINARY" --version
               HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "$BINARY" --smoke-test
+              if [ "$TARGET_ID" = linux-x64 ]; then
+                baseline_dir="$(mktemp -d)"
+                PI_NATIVE_VARIANT=baseline PI_NATIVES_DIR="$baseline_dir/natives" HOME="$baseline_dir/home" XDG_DATA_HOME="$baseline_dir/xdg" "$BINARY" --smoke-test
+                ls -la "$baseline_dir/natives/"*/pi_natives.linux-x64-baseline.node
+              fi
          - name: Upload binary artifact
            uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
            with:
