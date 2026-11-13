@@ -99,6 +99,47 @@ mise use -g github:can1357/oh-my-pi
 
 macOS · Linux · Windows · bun ≥ 1.4.4
 
+### Orb fork updates and managed installs
+
+The Orb fork targets release `v18.20.0-orb.1`; its base compatibility version
+remains `18.20.0`. `omp --version` identifies a compiled fork as
+`omp/18.20.0 (orb.1 <seven-character-commit>)`. Extensions can import
+[`BUILD_INFO`](docs/sdk.md#orb-build-identity) for the full compiled revision.
+
+Fleet installs are managed by the harness installer, not `omp update`.
+The upstream managed-install contract is:
+
+1. Resolve `omp` from `PATH`, then follow all symlinks with `realpath`.
+2. Read `manager.json` at `join(dirname(dirname(resolvedBinary)), "manager.json")`.
+   This is relative to the resolved executable, **not** its launcher symlink.
+3. Accept a JSON object with a nonempty string `name`, or fall back to a nonempty
+   string `manager` if `name` is absent, empty or not a string. Other fields are ignored.
+   A missing, unreadable, malformed or unrecognized manifest is **unmanaged**.
+
+The harness layout and manifest are:
+
+```text
+~/.local/bin/omp -> ~/.local/share/omp/bin/omp
+~/.local/share/omp/bin/omp
+~/.local/share/omp/manager.json
+```
+
+```json
+{"manager":"harness","name":"harness (`harness pull` or `harness link`)"}
+```
+
+For this layout, both `omp update` and `omp update --force` print:
+
+```text
+<PATH-resolved-omp> is installed and kept up to date by harness (`harness pull` or `harness link`); update it from harness (`harness pull` or `harness link`).
+```
+
+They return successfully (exit 0), without loading update settings, requesting release
+metadata, downloading or installing anything. `--check` and channel flags do not bypass
+this exemption either. Update the harness's per-platform fork release/hash pin and
+run `harness pull` or `harness link` to install it. A fork marker alone does **not**
+stop an unmanaged standalone install from self-updating to stock upstream.
+
 ### Shell completions
 
 `omp` generates its own completion scripts for **bash**, **zsh**, and **fish** from the live command/flag metadata, so they never drift from the actual CLI. Subcommands, flags, and enum values complete statically; model names (`--model`, `--smol`, `--slow`, `--plan`) resolve against the bundled model catalog and `--resume` against your on-disk sessions.

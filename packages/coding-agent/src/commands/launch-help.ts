@@ -111,6 +111,10 @@ export const launchHelp = {
 		"no-extensions": Flags.boolean({
 			description: "Disable extension discovery (explicit -e paths still work)",
 		}),
+		"no-mcp": Flags.boolean({
+			description:
+				"Skip MCP for this process: no server discovery, startup, or MCP tools; settings and mcp.json stay untouched (also OMP_NO_MCP=1)",
+		}),
 		"no-skills": Flags.boolean({ description: "Disable skills discovery and loading" }),
 		skills: Flags.string({ description: "Comma-separated glob patterns to filter skills (e.g., git-*,docker)" }),
 		"no-rules": Flags.boolean({ description: "Disable rules discovery and loading" }),

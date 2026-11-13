@@ -162,6 +162,7 @@ See [providers](./providers.md) and [models](./models.md) for model resolution.
 | `--trusted-extension <abs-path>`  | Exact allowlist of existing absolute module files (repeatable); disables ambient extension discovery and package-root sub-discovery. Cannot be combined with `--extension`/`-e`/`--hook`. |
 | `--plugin-dir <dir>`              | Add a local plugin directory to discovery (repeatable).                                                                                                                                   |
 | `--no-extensions`                 | Disable extension discovery (explicit `-e` paths still work).                                                                                                                             |
+| `--no-mcp`                        | Skip MCP for this process only: no config discovery, server startup, or MCP tools, and later `/mcp` connects fail. Settings and `mcp.json` stay untouched (also `OMP_NO_MCP=1`).      |
 | `--skills <globs>`                | Comma-separated glob patterns to filter [skills](./skills.md) (e.g. `git-*,docker`).                                                                                                      |
 | `--no-skills`                     | Disable skills discovery and loading.                                                                                                                                                     |
 | `--no-rules`                      | Disable rules discovery and loading. See [context files](./context-files.md).                                                                                                             |
@@ -216,7 +217,7 @@ Related flags for headless runs:
 - `--print-thoughts` — include thinking blocks in the printed text output.
 - `--mode json` — emit structured events instead of rendered text.
 - `--no-title` — skip title auto-generation (also `PI_NO_TITLE`).
-- `--max-time <duration>` — bound the run.
+- `--max-time <duration>` — bound the run, including any wait for a headless slot (below).
 - `--wait-async` — keep the run alive for its background jobs (below).
 - `--warn-cost <usd>` / `--max-cost <usd>` — warn at, or stop sending model requests from, a spend.
 
@@ -240,6 +241,17 @@ messages arrive in `message_end`, and opaque provider replay payloads are omitte
 Terminal turn failures produce a nonzero exit status in both text and JSON modes.
 A run stopped by `--max-cost` exits with status `3`: the cap message goes to
 stderr (a `cost-gate` notice in JSON mode) and no answer is printed.
+
+At most `headless.maxConcurrent` (default 12) headless runs execute at once on
+a machine, across every profile and caller: `-p`, `--mode text|json`, and any
+launch whose stdin is not a terminal (`--mode rpc|rpc-ui|acp`, `--version` and
+`--export` excluded). Before creating its session, a run takes one of the lock
+files `~/.omp/run/headless-gate/slot0`…`slot{N-1}` and holds it until it exits;
+while all are taken it waits, polling every 250 ms, and prints one notice to
+stderr. `OMP_HEADLESS_SLOTS` can lower N for the runs it reaches, never raise
+it. The wait counts against `--max-time`; a run whose deadline passes while
+waiting writes `headless slot wait timed out (N=<n>)` to stderr and exits with
+status `75` (`EX_TEMPFAIL`).
 
 `plan.defaultOnStartup` is ignored in print mode because there is no plan-review
 UI. Use `--plan-yolo` for unattended planning and implementation.

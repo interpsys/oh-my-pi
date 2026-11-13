@@ -25,6 +25,7 @@ import * as logger from "@oh-my-pi/pi-utils/logger";
 import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
 import { fuzzyFilter } from "@oh-my-pi/pi-tui/fuzzy";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { BUILD_VERSION } from "./build-info";
 import { reset as resetCapabilities } from "./capability";
 import {
 	type Args,
@@ -80,6 +81,7 @@ import {
 } from "./extensibility/plugins/marketplace-auto-update";
 import { registerDaemonProjectPresence } from "./launch/presence";
 import type { MCPManager } from "./mcp";
+import { disableMCPForProcess } from "./mcp/process-opt-out";
 import type { InteractiveMode } from "./modes/interactive-mode";
 import { formatSessionContinuationNotice } from "./modes/persistence-failure";
 import type { PrintModeOptions } from "./modes/print-mode";
@@ -1810,6 +1812,10 @@ export async function buildSessionOptions(
 		}
 	}
 
+	if (parsed.noMcp) {
+		options.enableMCP = false;
+	}
+
 	return options;
 }
 
@@ -1855,10 +1861,14 @@ export async function runRootCommand(
 			process.exit(1);
 		}
 
+		// Process-wide, before any session or protocol host exists: a later `/mcp`
+		// command, ACP client server or lazy `mcp://` read must not start MCP either.
+		if (parsedArgs.noMcp) disableMCPForProcess();
+
 		const notifs: (InteractiveModeNotify | null)[] = [];
 
 		if (parsedArgs.version) {
-			writeStartupNotice(parsedArgs, `${VERSION}\n`);
+			writeStartupNotice(parsedArgs, `${BUILD_VERSION}\n`);
 			process.exit(0);
 		}
 
