@@ -20,7 +20,7 @@ This document describes how MCP servers are discovered, connected, exposed as to
 
 ### Entry path from SDK
 
-`createAgentSession()` in `src/sdk.ts` performs MCP startup when `enableMCP` is true (default) and tool names are not restricted. A supplied `mcpManager` is reused without discovery. Otherwise there are two paths:
+`createAgentSession()` in `src/sdk.ts` performs MCP startup when `enableMCP` is true (default), tool names are not restricted, and the process has not opted out with `--no-mcp` or `OMP_NO_MCP=1`. The opt-out is process-wide: `MCPManager.discoverAndConnect()` then reads no config and `connectToServer()` refuses every server, so no later `/mcp` command, ACP client server, or lazy `mcp://` read starts one either. A supplied `mcpManager` is reused without discovery. Otherwise there are two paths:
 
 - **Headless/SDK** (no UI, no provided manager): awaits `discoverAndLoadMCPTools(cwd, { ... })` and merges the returned tools into the startup `customTools` set. Print mode alone then waits for configured servers' tool handshakes or failures before its first prompt (bounded by `OMP_MCP_TIMEOUT_MS`, default 30 seconds), refreshes the session's tool registry, and warns per unavailable server; `OMP_MCP_REQUIRE_READY=1` instead exits 1 without sending the prompt. `OMP_MCP_TIMEOUT_MS=0` disables this barrier deadline and may wait indefinitely.
 - **Interactive/TUI** (`hasUI: true`, no provided manager): constructs `MCPManager` immediately (with cache + auth storage), defers `discoverAndConnect()` to a background task started after the session exists, then binds tools via `session.refreshMCPTools(...)` (disposing the manager if the session was torn down mid-connect).
