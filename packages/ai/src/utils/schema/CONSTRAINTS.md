@@ -198,14 +198,3 @@ When adding/changing provider adapters:
 ## 6) Gemini CLI / Antigravity CCA parity
 
 The Gemini CLI / Antigravity Claude path MUST run the same full `normalizeSchemaForCCA` pipeline as the shared Google Claude path. It MUST NOT call only the first keyword-stripping pass, because that leaves object combiners, nullable unions, residual combiners, and fallback gating inconsistent between transports.
-
-## 7) Antigravity Gemini official request parity (`normalizeSchemaForAntigravityGemini`)
-
-With `antigravityRequestParity`, Antigravity Gemini tool declarations follow four captured official 2.31.2 request bodies. Use `normalizeSchemaForAntigravityGemini` only for that wire (`convertAntigravityParityTools` in `google-gemini-cli.ts`); the default Antigravity path stays on §6.
-
-1. Input is `toolWireSchema(tool)` directly; the `normalizeSchemaForGoogle` pass (synthetic `propertyOrdering`, spilled bounds) is not applied first.
-2. It runs the `normalizeSchemaForCCA` option set (combiner merging/collapse, nullable extraction, residual gate, per-tool fallback) plus string-only `enum`, except:
-   - Bounds Google's `Schema` proto carries as typed fields (`GOOGLE_SCHEMA_PROTO_BOUND_FIELDS`: `minLength`, `maxLength`, `minItems`, `maxItems`, `minProperties`, `maxProperties`, `minimum`, `maximum`) stay on the node instead of spilling into `description`; every other `UNSUPPORTED_SCHEMA_FIELDS` key is stripped and spilled as in §2.
-   - `{ "type": "object" }` keeps no synthetic `properties: {}`.
-3. Output is proto JSON: `type` values upper-case (`OBJECT`, `STRING`, …) and `int64` bounds decimal strings (`"minLength": "1"`); `minimum`/`maximum` stay numbers.
-4. Each declaration is its own `tools` entry with the schema on `parameters`.

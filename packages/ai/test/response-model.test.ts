@@ -189,7 +189,7 @@ describe("google-gemini-cli (antigravity) responseModel", () => {
 		};
 		const result = await streamGoogleGeminiCli(antigravityModel, context, {
 			apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
-			antigravityEndpointMode: "production",
+			antigravityEndpointMode: "auto",
 			fetch: fetchMock,
 		}).result();
 		return { result, calls };
@@ -209,7 +209,7 @@ describe("google-gemini-cli (antigravity) responseModel", () => {
 		expect(result.responseModel).toBeUndefined();
 	});
 
-	it("drops the model an empty, retried attempt reported", async () => {
+	it("drops the model an empty attempt reported once the next endpoint answers", async () => {
 		const { result, calls } = await runAntigravity([ccaChunk("", GEMINI_REPORTED), ccaChunk("Done.")]);
 		expect(calls).toBe(2);
 		expect(result.stopReason).toBe("stop");

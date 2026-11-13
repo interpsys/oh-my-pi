@@ -880,14 +880,6 @@ export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	/** Antigravity endpoint routing mode: "auto" (default with failover), "production", "sandbox". */
 	antigravityEndpointMode?: "auto" | "production" | "sandbox";
 	/**
-	 * google-antigravity Gemini only: encode requests like the official
-	 * Antigravity client (see docs/provider-quirks.md, "Official request parity").
-	 * Unset falls back to the process default set by
-	 * `configureAntigravityRequestParity` (off); an explicit `false` keeps the
-	 * default encoding. Other routes, including Antigravity Claude, ignore it.
-	 */
-	antigravityRequestParity?: boolean;
-	/**
 	 * Anthropic `server-side-fallback-2026-06-01` fallback chain (top-level
 	 * `fallbacks` request field). Opt-in ONLY — leaving this undefined is
 	 * the default and preserves the pre-fallback behavior on every

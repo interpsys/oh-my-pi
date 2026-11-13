@@ -6,6 +6,7 @@
 
 - Added `getHeadlessGateDir()`, which returns the profile-independent directory of headless-run slot locks (`~/.omp/run/headless-gate`; XDG default: `$XDG_STATE_HOME/omp/run/headless-gate`)
 - Added the `shouldRetryError` option to `fetchWithRetry`, which rethrows a thrown fetch error at once when it returns `false`; without it every thrown error is retried as before
+- Added an `onBytes` observer to `readSseEvents` and `readSseJson` that sees every raw body chunk, including comments and partial frames
 
 ## [18.18.2] - 2026-11-08
 

@@ -17,7 +17,6 @@ import {
 	CLOUD_CODE_ASSIST_SHARED_SCHEMA_KEYS,
 	CLOUD_CODE_ASSIST_TYPE_SPECIFIC_KEYS,
 	COMBINATOR_KEYS,
-	GOOGLE_SCHEMA_PROTO_BOUND_FIELDS,
 	LIFTABLE_TO_DESCRIPTION_FIELDS,
 	NON_STRUCTURAL_SCHEMA_KEYS,
 	UNSUPPORTED_SCHEMA_FIELDS,
@@ -207,10 +206,6 @@ const CLOUD_CODE_ASSIST_CLAUDE_FALLBACK_SCHEMA = {
 
 function isGoogleUnsupportedSchemaField(key: string): boolean {
 	return Object.hasOwn(UNSUPPORTED_SCHEMA_FIELDS, key);
-}
-
-function isAntigravityGeminiUnsupportedSchemaField(key: string): boolean {
-	return isGoogleUnsupportedSchemaField(key) && !Object.hasOwn(GOOGLE_SCHEMA_PROTO_BOUND_FIELDS, key);
 }
 
 function isMcpUnsupportedSchemaField(key: string): boolean {
@@ -1361,71 +1356,6 @@ export function normalizeSchemaForCCA(value: unknown): unknown {
 		rejectResidualIncompatibilities: ["type-array", "type-null", "nullable", "combiners", "not"],
 		validateAndFallback: { fallback: CLOUD_CODE_ASSIST_CLAUDE_FALLBACK_SCHEMA },
 	});
-}
-
-/**
- * Project a normalized schema onto Google's `Schema` proto JSON the way the
- * official Antigravity client writes it: upper-case `Type` enum names and
- * `int64` bounds as decimal strings. Builds new nodes, so shared inputs (the
- * fallback schema, memoized wire schemas) are never mutated. The Cloud Code
- * Assist pipeline leaves subschemas only under `properties` and `items`.
- */
-function toGoogleSchemaProtoJson(node: unknown): unknown {
-	if (!isJsonObject(node)) return node;
-	const out: JsonObject = {};
-	for (const key in node) {
-		const value = node[key];
-		if (key === "type" && typeof value === "string") {
-			out.type = value.toUpperCase();
-		} else if (key === "items") {
-			out.items = toGoogleSchemaProtoJson(value);
-		} else if (key === "properties" && isJsonObject(value)) {
-			const properties: JsonObject = {};
-			for (const name in value) properties[name] = toGoogleSchemaProtoJson(value[name]);
-			out.properties = properties;
-		} else if (typeof value === "number" && GOOGLE_SCHEMA_PROTO_BOUND_FIELDS[key] === "int64") {
-			out[key] = String(value);
-		} else {
-			out[key] = value;
-		}
-	}
-	return out;
-}
-
-/**
- * Official Antigravity 2.31.2 Gemini `parameters` encoding (the
- * `antigravityRequestParity` wire): the Cloud Code Assist pipeline the
- * Antigravity route already runs, except that it keeps the bounds Google's
- * Schema proto carries as typed fields, adds no `properties: {}` or
- * `propertyOrdering`, and emits proto JSON (upper-case types, string `int64`
- * bounds). String enums only, as the proto's `enum` is `repeated string`.
- */
-export function normalizeSchemaForAntigravityGemini(value: unknown): unknown {
-	return toGoogleSchemaProtoJson(
-		normalizeSchema(value, {
-			coerceBooleanSubschemas: "standard",
-			unsupportedFields: isAntigravityGeminiUnsupportedSchemaField,
-			normalizeFieldNames: true,
-			collapseNullFields: true,
-			scalarizeTypeArrays: true,
-			stripNullableKeyword: true,
-			autoPropertyOrdering: false,
-			ensureObjectProperties: false,
-			liftStrippedToDescription: { format: "spill" },
-			mergeObjectCombiners: true,
-			collapseSameTypeCombiners: true,
-			collapseMixedTypeCombiners: true,
-			stripResidualCombinersFixpoint: true,
-			extractNullableFromUnions: true,
-			inferTypeForBareEnum: true,
-			dropNonScalarEnum: false,
-			stringEnumsOnly: true,
-			dropEmptyEnumMembers: true,
-			foldOneOfIntoAnyOf: false,
-			rejectResidualIncompatibilities: ["type-array", "type-null", "nullable", "combiners", "not"],
-			validateAndFallback: { fallback: CLOUD_CODE_ASSIST_CLAUDE_FALLBACK_SCHEMA },
-		}),
-	);
 }
 
 export function normalizeSchemaForMCP(value: unknown): unknown {

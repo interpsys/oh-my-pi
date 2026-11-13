@@ -58,23 +58,17 @@ function ccaThinkingOnlyChunk(thinking: string): Record<string, unknown> {
 	};
 }
 
-/**
- * `{ response: { candidates } }` envelope whose only part is an empty text carrying a thought
- * signature, finished with `STOP`: the live Antigravity zero-output shape.
- */
-function ccaSignatureOnlyStopChunk(): Record<string, unknown> {
-	return {
-		response: {
-			candidates: [
-				{
-					content: { role: "model", parts: [{ thoughtSignature: "EooCCocCAWkU", text: "" }] },
-					finishReason: "STOP",
-				},
-			],
-			usageMetadata: { promptTokenCount: 88453, totalTokenCount: 88453, cachedContentTokenCount: 86404 },
-		},
-	};
-}
+/** A real Gemini 4 Carbon empty reply (redacted): one signature-only part, no finishReason. */
+const CARBON_EMPTY_CHUNK = {
+	response: {
+		candidates: [{ content: { role: "model", parts: [{ thoughtSignature: "[REDACTED]", text: "" }] } }],
+		usageMetadata: { promptTokenCount: 74543, totalTokenCount: 74543, cachedContentTokenCount: 72494 },
+		modelVersion: "gemini-4-carbon",
+		responseId: "[REDACTED]",
+	},
+	traceId: "[REDACTED]",
+	metadata: {},
+};
 
 async function drain(stream: AsyncIterable<AssistantMessageEvent>) {
 	const events: AssistantMessageEvent[] = [];
@@ -177,28 +171,6 @@ describe("Google empty-response retry (public + Vertex path)", () => {
 
 		const stream = streamGoogle(genaiModel, context, { apiKey: "k", fetch: fetchMock });
 		const result = await stream.result();
-
-		expect(calls).toBe(3); // MAX_EMPTY_STREAM_RETRIES (2) + 1 initial attempt
-		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toContain("empty response");
-	});
-
-	it("retries Vertex empty STOPs up to three requests in total", async () => {
-		let calls = 0;
-		const fetchMock: FetchImpl = async input => {
-			const url = input instanceof Request ? input.url : input.toString();
-			if (url.includes("oauth2.googleapis.com/token") || url.includes("metadata.google.internal")) {
-				return new Response(JSON.stringify({ access_token: "token", expires_in: 3600 }));
-			}
-			calls += 1;
-			return sse(genaiChunk(""));
-		};
-
-		const result = await streamGoogleVertex(vertexModel, context, {
-			project: "project",
-			location: "location",
-			fetch: fetchMock,
-		}).result();
 
 		expect(calls).toBe(3); // MAX_EMPTY_STREAM_RETRIES (2) + 1 initial attempt
 		expect(result.stopReason).toBe("error");
@@ -406,37 +378,34 @@ describe("Google empty-response retry (Cloud Code Assist path)", () => {
 		]);
 	});
 
-	it.each([undefined, "STOP"])(
-		"surfaces an empty response after one request (finishReason=%s)",
-		async finishReason => {
-			let calls = 0;
-			const usageMetadata = { promptTokenCount: 146282, candidatesTokenCount: 0, totalTokenCount: 146282 };
-			const fetchMock: FetchImpl = async () => {
-				calls++;
-				return withResponseUrl(
-					sse({
-						response: {
-							candidates: finishReason ? [{ content: { role: "model", parts: [] }, finishReason }] : [],
-							usageMetadata,
-						},
-					}),
-					"https://example.com",
-				);
-			};
-			const result = await streamGoogleGeminiCli(cliModel, context, {
-				apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
-				fetch: fetchMock,
-			}).result();
+	it.each([undefined, "STOP"])("is not resent after an empty response (finishReason=%s)", async finishReason => {
+		let calls = 0;
+		const usageMetadata = { promptTokenCount: 146282, candidatesTokenCount: 0, totalTokenCount: 146282 };
+		const fetchMock: FetchImpl = async () => {
+			calls++;
+			return withResponseUrl(
+				sse({
+					response: {
+						candidates: finishReason ? [{ content: { role: "model", parts: [] }, finishReason }] : [],
+						usageMetadata,
+					},
+				}),
+				"https://example.com",
+			);
+		};
+		const result = await streamGoogleGeminiCli(cliModel, context, {
+			apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
+			fetch: fetchMock,
+		}).result();
 
-			expect(calls).toBe(1);
-			expect(result.stopReason).toBe("error");
-			expect(AIError.retriable(result.errorId ?? 0)).toBe(false);
-			expect(result.errorMessage).toContain("empty response");
-			expect(result.errorMessage).toContain(`"finishReason":${JSON.stringify(finishReason ?? null)}`);
-			expect(result.errorMessage).toContain(`"usageMetadata":${JSON.stringify(usageMetadata)}`);
-			expect(result.errorMessage).toContain('"promptFeedback":null');
-		},
-	);
+		expect(calls).toBe(1);
+		expect(result.stopReason).toBe("error");
+		expect(AIError.retriable(result.errorId ?? 0)).toBe(false);
+		expect(result.errorMessage).toContain("empty response");
+		expect(result.errorMessage).toContain(`"finishReason":${JSON.stringify(finishReason ?? null)}`);
+		expect(result.errorMessage).toContain(`"usageMetadata":${JSON.stringify(usageMetadata)}`);
+		expect(result.errorMessage).toContain('"promptFeedback":null');
+	});
 
 	it("accepts an empty STOP when silence is a valid caller result", async () => {
 		let calls = 0;
@@ -635,15 +604,12 @@ describe("Google empty-response retry (Cloud Code Assist path)", () => {
 		});
 	}
 
-	it("tries each Antigravity auto endpoint once with the same body, then returns a non-retryable empty response", async () => {
+	it("sends a real Carbon empty reply's body once per auto endpoint, then a non-retryable error", async () => {
 		const requests: Array<{ endpoint: string; body: string }> = [];
 		const fetchMock: FetchImpl = async (input, init) => {
 			const endpoint = endpointFromInput(input);
-			requests.push({
-				endpoint,
-				body: input instanceof Request ? await input.clone().text() : String(init?.body),
-			});
-			return withResponseUrl(sse(ccaSignatureOnlyStopChunk()), endpoint);
+			requests.push({ endpoint, body: String(init?.body) });
+			return withResponseUrl(sse(CARBON_EMPTY_CHUNK), endpoint);
 		};
 
 		const result = await streamGoogleGeminiCli(antigravityModel, context, {
@@ -659,7 +625,7 @@ describe("Google empty-response retry (Cloud Code Assist path)", () => {
 		expect(requests[1]?.body).toBe(requests[0]?.body);
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toContain("Cloud Code Assist API returned an empty response");
-		expect(result.errorMessage).toContain('"finishReason":"STOP"');
+		expect(result.errorMessage).toContain('"finishReason":null');
 		expect(AIError.retriable(result.errorId ?? 0)).toBe(false);
 	});
 

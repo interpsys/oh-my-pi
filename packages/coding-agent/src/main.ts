@@ -1763,10 +1763,6 @@ export async function buildSessionOptions(
 		options.enableLsp = false;
 	}
 
-	if (parsed.noMcp) {
-		options.enableMCP = false;
-	}
-
 	// Skills
 	if (parsed.noSkills) {
 		options.skills = [];
