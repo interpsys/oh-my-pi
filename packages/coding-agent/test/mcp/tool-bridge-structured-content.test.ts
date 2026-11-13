@@ -220,6 +220,29 @@ describe("MCP bridge structuredContent", () => {
 		}
 	});
 
+	it("keeps a spilled MCP text body exact in rawContent for eval-bridged calls only", async () => {
+		using temp = TempDir.createSync("@mcp-raw-spill-");
+		const manager = SessionManager.create(temp.path(), temp.path());
+		const body = JSON.stringify({ rows: "é🦊x".repeat(25_600) });
+		expect(Buffer.byteLength(body)).toBeGreaterThan(200 * 1024);
+		const tool = wrapToolWithMetaNotice(
+			CustomToolAdapter.wrap(toolFor({ content: [{ type: "text", text: body }] }), () => ({}) as CustomToolContext),
+		);
+		const context = { sessionManager: manager, settings: Settings.isolated({}) } as unknown as AgentToolContext;
+		try {
+			const direct = (await tool.execute("direct", {}, undefined, undefined, context)).details as MCPToolDetails;
+			expect(direct.meta?.truncation?.artifactId).toBeDefined();
+			expect(direct.rawContent).toBeUndefined();
+			const bridged = await tool.execute("bridged", {}, undefined, undefined, { ...context, evalBridge: true });
+			const value = bridgeValueFromToolResult(tool.name, {}, bridged);
+			if (typeof value !== "object") throw new Error("Expected eval details");
+			expect((value.details as MCPToolDetails).rawContent).toEqual([{ type: "text", text: body }]);
+			expect(Buffer.byteLength(value.text)).toBeLessThan(64 * 1024);
+		} finally {
+			await manager.close();
+		}
+	});
+
 	it("persists unspilled MCP data and spilled non-MCP detail collisions", async () => {
 		using temp = TempDir.createSync("@mcp-structured-boundaries-");
 		const manager = SessionManager.create(temp.path(), temp.path());

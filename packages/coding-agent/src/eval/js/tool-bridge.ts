@@ -345,6 +345,7 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 					if (progress) options.emitStatus?.({ op: "mcp_progress", id: toolCallId, tool: name, ...progress });
 				}
 			: undefined;
+	const context = options.session.getToolContext?.();
 	try {
 		// A delegated-work tool pauses only the cell's runtime-work watchdog; the turn's
 		// signal still reaches it. Without a status sink the pause wrapper is a no-op.
@@ -357,7 +358,7 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 						validatedArgs,
 						options.signal,
 						onUpdate,
-						options.session.getToolContext?.(),
+						context && { ...context, evalBridge: true },
 					);
 				} finally {
 					settled = true;
