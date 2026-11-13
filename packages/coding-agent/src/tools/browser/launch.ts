@@ -655,7 +655,7 @@ export function buildHeadlessLaunchArgs(
 		DISABLE_AUTOMATION_CONTROLLED_ARG,
 		"--allow-file-access-from-files",
 		"--hide-scrollbars",
-		"--enable-features=WebMCPTesting,DevToolsWebMCPSupport",
+		"--enable-features=WebMCP,WebMCPTesting,DevToolsWebMCPSupport",
 		`--window-size=${viewport.width},${viewport.height}`,
 		...RENDERER_PRIORITY_ARGS,
 	];
