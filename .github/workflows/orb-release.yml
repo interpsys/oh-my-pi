@@ -52,6 +52,26 @@ jobs:
                 echo "Expected a vX.Y.Z-orb.N tag, got: '$tag'" >&2
                 exit 1
               fi
+              source_ref="HEAD"
+              if git rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1; then
+                source_ref="refs/tags/$tag"
+              fi
+              utils_version="$(git show "$source_ref:packages/utils/package.json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])')"
+              pkg_version="$(git show "$source_ref:packages/coding-agent/package.json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])')"
+              variant="$(git show "$source_ref:packages/coding-agent/src/build-info.ts" | sed -nE 's/^[[:space:]]*variant:[[:space:]]*"([^"]+)",?[[:space:]]*$/\1/p' | head -n1)"
+              if [ -z "$utils_version" ] || [ -z "$pkg_version" ] || [ -z "$variant" ]; then
+                echo "Failed to read version/variant from $source_ref (utils='$utils_version', coding-agent='$pkg_version', variant='$variant')" >&2
+                exit 1
+              fi
+              if [ "$utils_version" != "$pkg_version" ]; then
+                echo "Package version mismatch: packages/utils=$utils_version, packages/coding-agent=$pkg_version" >&2
+                exit 1
+              fi
+              expected_tag="v${utils_version}-${variant}"
+              if [ "$tag" != "$expected_tag" ]; then
+                echo "Release tag '$tag' does not match expected '$expected_tag' (from VERSION=$utils_version and BUILD_INFO.variant=$variant)" >&2
+                exit 1
+              fi
               echo "Building fork release assets for $tag"
               echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
