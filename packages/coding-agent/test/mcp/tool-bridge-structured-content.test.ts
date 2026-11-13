@@ -164,7 +164,8 @@ describe("MCP bridge structuredContent", () => {
 
 			const bridged = await tool.execute("bridged", {}, undefined, undefined, { ...context, evalBridge: true });
 			const value = bridgeValueFromToolResult(tool.name, {}, bridged);
-			if (typeof value !== "object") throw new Error("Expected eval details");
+			if (typeof value !== "object" || value === null || !("details" in value) || !("text" in value))
+				throw new Error("Expected eval details");
 			expect((value.details as MCPToolDetails).rawContent).toEqual([{ type: "text", text: body }]);
 			expect((value.details as MCPToolDetails).structuredContent).toEqual(structuredContent);
 			expect((value.details as MCPToolDetails).meta?.truncation).toBeUndefined();
