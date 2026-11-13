@@ -32,8 +32,8 @@ declare module "@oh-my-pi/pi-agent-core" {
 		/** Set while the session runs the Spotlight experiment: the tool wrapper passes the final result of each of
 		 *  the agent's own calls (`toolCall` lists it under the tool's name) through it. */
 		spotlightShape?: CalledToolShaper;
-		/** Set by the eval `tool.*` bridge. Bridged calls write no toolResult
-		 *  message, so a spill keeps MCP `details.rawContent` exact for the code. */
+		/** Set by the eval `tool.*` bridge. Bridged calls return into kernel memory
+		 *  and write no toolResult message, so they skip the shared artifact spill. */
 		evalBridge?: boolean;
 	}
 }

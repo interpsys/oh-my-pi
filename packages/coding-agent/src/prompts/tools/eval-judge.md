@@ -41,10 +41,11 @@ await judgeBatch(states, questions, { intent?, concurrency?, retries?, minOk?, i
     - `intent` is an optional nonempty progress/job label (default `"Judging"`).
     Returns at once; pull settled items in bounded slices across cells:
     - `await b.drain(timeout?)` (seconds; omitted waits for the next item) → {{#if py}}`[(key, item)]`{{else}}`[[key, item]]`{{/if}} settled since the last drain
-      (`[]` on timeout or once the run is done; `item.ok` → `item.answers`, else `item.error`; item failures never raise)
+      (`[]` on timeout or once the run is done; `item.ok` → `item.answers`, else `item.error`; `item.model` is the backend that answered; item failures never raise)
     - `{{#if py}}async for k, item in b.drain_iter(timeout){{else}}for await (const [k, item] of b.drainIter({ timeout })){{/if}}` until timeout or completion
-    - `{{#unless py}}await {{/unless}}b.status()` → `{id, intent, done, total, failed, cost, running, model?, elapsedS, error?}`
-    - `{{#unless py}}await {{/unless}}b.results()` → `{key: answers}` so far
+    - `{{#unless py}}await {{/unless}}b.status()` → `{id, intent, done, total, failed, cost, running, model, models, elapsedS, error?}`
+      (`model` is {{#if py}}`None`{{else}}`null`{{/if}} before any answer and `"mixed"` when more than one backend answered; `models` counts answers per backend)
+    - `{{#unless py}}await {{/unless}}b.results()` → `{key: {answers, model}}` so far
     - `{{#unless py}}await {{/unless}}b.failed()` → `{key: error}`
     - `{{#unless py}}await {{/unless}}b.cancel()`
     - `{{#unless py}}await {{/unless}}b.close()` cancels it if running and releases it.
