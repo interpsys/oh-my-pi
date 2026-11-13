@@ -718,7 +718,8 @@ type SteeringUserMessage =
 	  });
 
 function isSteeringUserMessage(message: AgentMessage | undefined): message is SteeringUserMessage {
-	if (message?.role === "user") return message.steering === true;
+	// The user envelope is for user-typed steers; agent- and harness-sent steers carry their own envelope.
+	if (message?.role === "user") return message.steering === true && message.attribution !== "agent";
 	return (
 		message?.role === "custom" && message.customType === COLLAB_PROMPT_MESSAGE_TYPE && message.attribution === "user"
 	);
