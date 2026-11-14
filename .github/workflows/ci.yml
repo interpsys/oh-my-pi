@@ -555,6 +555,30 @@ jobs:
          - uses: ./.github/actions/native-artifacts
            with:
               targets: linux-x64-baseline linux-x64-modern
+         - name: Pin Chrome for Testing on hosted runners
+           if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.repository != 'can1357/oh-my-pi' }}
+           shell: bash
+           run: |
+              set -euo pipefail
+              # Upstream vmon runners have no Chrome pin (tooling defaults to
+              # PUPPETEER_REVISIONS.chrome in puppeteer-core). Hosted ubuntu-22.04
+              # ships system Chrome 157+, which resolveSystemChromium() otherwise
+              # picks over Chrome for Testing; install the pinned CfT build and
+              # export PUPPETEER_EXECUTABLE_PATH so hosted runs match tooling.
+              build_id="$(bun --cwd=packages/coding-agent -e 'import { PUPPETEER_REVISIONS } from "puppeteer-core/internal/revisions.js"; console.log(PUPPETEER_REVISIONS.chrome);')"
+              cft_root="$HOME/.omp/puppeteer/chrome/linux-$build_id"
+              chrome_bin="$cft_root/chrome-linux64/chrome"
+              if [ ! -x "$chrome_bin" ]; then
+                archive="$RUNNER_TEMP/chrome-linux64-$build_id.zip"
+                curl -fsSL --retry 5 --retry-max-time 120 -o "$archive" \
+                  "https://storage.googleapis.com/chrome-for-testing-public/$build_id/linux64/chrome-linux64.zip"
+                mkdir -p "$cft_root"
+                unzip -q -o "$archive" -d "$cft_root"
+                rm -f "$archive"
+                chmod +x "$chrome_bin"
+              fi
+              "$chrome_bin" --version
+              echo "PUPPETEER_EXECUTABLE_PATH=$chrome_bin" >> "$GITHUB_ENV"
          - name: Test coding-agent native/unit bucket
            env:
               OMP_TEST_CONCURRENCY: "4"
