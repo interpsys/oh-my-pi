@@ -337,6 +337,14 @@ class DebuggerDetachedError extends ToolError {
 		super(message);
 	}
 }
+/** Test hook for exercising debugger-detach re-adoption without a live relay. */
+export function createDebuggerDetachedErrorForTest(
+	message: string,
+	when: "during" | "before",
+	reason: string,
+): ToolError {
+	return new DebuggerDetachedError(message, when, reason);
+}
 const REPORTED_INIT_FAILURE = Symbol("reported-init-failure");
 
 type ReportedInitFailure = Error & { [REPORTED_INIT_FAILURE]?: true };
@@ -1246,10 +1254,15 @@ async function runInTabWithSnapshot(
 	}
 	const cancellation = new AbortController();
 	let abortTimer: Timer | undefined;
+	let cancelGraceMs = GRACE_MS;
+	const scheduleCancellation = (): void => {
+		clearTimeout(abortTimer);
+		abortTimer = setTimeout(() => cancellation.abort(new ToolAbortError()), cancelGraceMs);
+	};
 	const abort = (): void => {
 		safeSend(tab, { type: "abort", id });
 		for (const ctrl of pending.toolCalls.values()) ctrl.abort(opts.signal?.reason);
-		abortTimer = setTimeout(() => cancellation.abort(new ToolAbortError()), GRACE_MS);
+		scheduleCancellation();
 	};
 	if (opts.signal?.aborted) abort();
 	else opts.signal?.addEventListener("abort", abort, { once: true });
@@ -1343,6 +1356,10 @@ async function runInTabWithSnapshot(
 				const lost = tab.ownsPage
 					? `${error.message}${landed}. omp could not reattach to the tab it had opened, so it tried to close it: either the tab had closed, or ${DEBUGGER_DETACH_REFUSAL}. Open a new tab to continue; if another extension's frame was the cause, it can detach omp there again`
 					: `${error.message}${landed}. omp could not reattach to the tab, so it was released: either the tab was closed, or ${DEBUGGER_DETACH_REFUSAL}. If the tab is still open, open it again once that frame is gone; if Chrome refused the attach, the relay hides the tab until its URL changes, so navigate it in Chrome first`;
+				// Re-adoption spawns a fresh worker and reattaches Chrome's debugger, which can exceed the 750ms
+				// code-abort grace on loaded hosts; give a cancel landing during re-adoption the reattach budget.
+				cancelGraceMs = WORKER_EXIT_REATTACH_TIMEOUT_MS;
+				if (opts.signal?.aborted && !cancellation.signal.aborted) scheduleCancellation();
 				const reattached = await recoverWorkerTab(tab, name, opts.timeoutMs, lost, {
 					recover: false,
 					failedReason: lost,

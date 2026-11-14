@@ -38,7 +38,12 @@ import type { BrowserHandle } from "@oh-my-pi/pi-coding-agent/tools/browser/regi
 import * as sharedDaemon from "@oh-my-pi/pi-coding-agent/tools/browser/shared-daemon";
 import { stopSharedBrowserIfUnreachable } from "@oh-my-pi/pi-coding-agent/tools/browser/shared-daemon";
 import type { WorkerInbound } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-protocol";
-import { getTabsMapForTest, releaseTab, runInTab } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
+import {
+	createDebuggerDetachedErrorForTest,
+	getTabsMapForTest,
+	releaseTab,
+	runInTab,
+} from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
 import type { WorkerTabSession } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
@@ -419,6 +424,86 @@ describe("browser cleanup — timed-out target close in a shared browser", () =>
 				expect(outcome).toMatchObject({ returnValue: true });
 			}
 			expect(getTabsMapForTest().has(tab.name)).toBe(!expired && !cancel);
+		} finally {
+			globalThis.Worker = RealWorker;
+		}
+	});
+
+	it.each([
+		{
+			stalled: false,
+			label: "keeps a re-adopted tab alive when cancel lands and startup exceeds the 750ms abort grace",
+		},
+		{ stalled: true, label: "terminates a stalled re-adoption replacement after the reattach budget" },
+	])("$label", async ({ stalled }) => {
+		const scope = trackedScope();
+		spyOn(sharedDaemon, "stopSharedBrowserIfUnreachable").mockResolvedValue(false);
+		const tab = makeWedgeTab(scope, { close: "fail" });
+		const runSent = Promise.withResolvers<string>();
+		tab.worker.send = message => {
+			if (message.type === "run") runSent.resolve(message.id);
+		};
+		getTabsMapForTest().set(tab.name, tab);
+		const RealWorker = globalThis.Worker;
+		const readyWait = Promise.withResolvers<void>();
+		const replacementTerminated = Promise.withResolvers<void>();
+		const controller = new AbortController();
+		let replacement: EventTarget | undefined;
+		vi.useFakeTimers();
+		let now = 0;
+		spyOn(performance, "now").mockImplementation(() => now);
+		const setTimer = globalThis.setTimeout;
+		let setupSent = false;
+		spyOn(globalThis, "setTimeout").mockImplementation(
+			Object.assign((...args: Parameters<typeof setTimeout>) => {
+				const timer = setTimer(...args);
+				if (setupSent && args[1] !== 2_000) readyWait.resolve();
+				return timer;
+			}, setTimer),
+		);
+		globalThis.Worker = class extends EventTarget {
+			constructor() {
+				super();
+				replacement = this;
+			}
+			postMessage(message: WorkerInbound): void {
+				if (message.type === "init") {
+					setupSent = true;
+					this.dispatchEvent(new MessageEvent("message", { data: { type: "setup" } }));
+				}
+				if (message.type === "close") {
+					this.dispatchEvent(new MessageEvent("message", { data: { type: "closed" } }));
+				}
+			}
+			terminate(): void {
+				replacementTerminated.resolve();
+			}
+		} as unknown as typeof Worker;
+		try {
+			const run = runInTab(tab.name, {
+				code: "",
+				timeoutMs: 30_000,
+				signal: controller.signal,
+				session: makeSession(),
+			});
+			const result = run.catch(error => error);
+			const id = await runSent.promise;
+			tab.pending.get(id)!.reject(createDebuggerDetachedErrorForTest("Detached", "during", "target_closed"));
+			await readyWait.promise;
+			controller.abort();
+			now = 1_000;
+			vi.advanceTimersByTime(1_000);
+			expect(getTabsMapForTest().has(tab.name)).toBe(true);
+			if (!stalled) {
+				replacement!.dispatchEvent(new MessageEvent("message", { data: { type: "ready", info: {} } }));
+			} else {
+				now = 10_000;
+				vi.advanceTimersByTime(9_000);
+			}
+			const outcome = await result;
+			expect(outcome).toBeInstanceOf(ToolAbortError);
+			if (stalled) await replacementTerminated.promise;
+			expect(getTabsMapForTest().has(tab.name)).toBe(!stalled);
 		} finally {
 			globalThis.Worker = RealWorker;
 		}
