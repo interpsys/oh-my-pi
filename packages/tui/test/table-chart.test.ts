@@ -5,6 +5,7 @@ import {
 	buildChart,
 	type ChartKind,
 	type ChartPlan,
+	isTransition,
 	planChart,
 	worthCharting,
 } from "@oh-my-pi/pi-tui/charts/chart-plan";
@@ -306,6 +307,18 @@ describe("analyzeTable", () => {
 		expect(shares.measures.map(column => column.header)).toEqual(["Tokens", "Share"]);
 	});
 
+	it("ignores cyclic near-equal sums without losing ordinary compositions", () => {
+		const ambiguous = analyze(
+			"| snake_id | label | metric_a | metric_b |\n|---|---|---|---|\n| 0 | none | - | - |\n| 3 | alpha | 85,000,000,000 | 85,000,000,000 |\n| 4 | beta | 86,000,000,000 | 86,000,000,000 |\n| 5 | gamma | 87,000,000,000 | 87,000,000,000 |",
+		);
+		expect(ambiguous.composition).toBeUndefined();
+
+		const exact = analyze(
+			"| label | first | second | total |\n|---|---:|---:|---:|\n| alpha | 2 | 7 | 9 |\n| beta | 4 | 9 | 13 |\n| gamma | 6 | 11 | 17 |",
+		);
+		expect(exact.composition).toEqual({ whole: 3, parts: [1, 2], exact: true });
+	});
+
 	it("drops measure columns that echo one setting", () => {
 		const analysis = analyze(
 			"| Run | threshold | score |\n|---|---|---|\n| a | 50 | 61 |\n| b | 50 | 63 |\n| c | 50 | 58 |",
@@ -380,6 +393,47 @@ describe("analyzeTable", () => {
 		expect(analysis.measures[0]!.cells.map(cell => cell.kind === "number" && cell.value)).toEqual([
 			386, 1988, 7715, 17_083, 31_489,
 		]);
+	});
+
+	// Regression: a bare `ratio` of two timings stayed a measure, and a judged chart drew it as 719× less than C++.
+	it("reads a column dividing two others as restating them, never one of the terms", () => {
+		const bare = analyze(
+			"| mode | old C++ (ms) | Python (ms) | ratio | median per request |\n|---|---|---|---|---|\n| probe-best4 | 717 | 715 | 0.997 | 1.000 |\n| probe-all-heads | 1298 | 1294 | 0.997 | 1.000 |\n| call | 2320 | 2325 | 1.002 | 1.003 |\n| gen32 | 5536 | 5545 | 1.002 | 1.001 |\n| all, wall time | 10181 | 10180 | 1.000 | |",
+		);
+		// Every column is the others' quotient or product: the ratio is the one steady across workload sizes.
+		expect(bare.measures.map(column => column.header)).toEqual(["old C++ (ms)", "Python (ms)", "median per request"]);
+		// A speedup written as a factor is the ratio however much more than the timings it varies.
+		const factors = analyze(
+			"| case | Go | Zig | speedup |\n|---|---|---|---|\n| a | 80 ms | 20 ms | 4.0× |\n| b | 90 ms | 60 ms | 1.5× |\n| c | 100 ms | 10.0 ms | 10.0× |",
+		);
+		expect(factors.measures.map(column => column.header)).toEqual(["Go", "Zig"]);
+	});
+});
+
+describe("isTransition", () => {
+	it("reads `with`/`to`/`from` as a condition only between headers naming one subject", () => {
+		expect(isTransition("Median", "Runs with ≥10")).toBe(false);
+		expect(isTransition("build without cache", "build with cache")).toBe(true);
+		expect(isTransition("Before (kata)", "After (vmon)")).toBe(true);
+	});
+});
+
+describe("row name nesting", () => {
+	it("keeps a leading number with the name before it", () => {
+		const table = analyzeTable(
+			["Detector", "AUC"],
+			[
+				["Step length alone", "0.690"],
+				["EmbeddingGemma 2 embedding", "0.743"],
+				["EmbeddingGemma 2, layer 14", "0.772"],
+				["Jev 15 + EmbeddingGemma", "0.759"],
+				["Jev 15 + layer 14", "0.783"],
+			],
+		);
+		const spec = buildChart(table, { kind: "bar", label: 0, series: [1], transpose: false });
+		const heads = (spec?.groups ?? []).map(group => group.name).filter(Boolean);
+		expect(heads).not.toContain("EmbeddingGemma");
+		expect(heads).not.toContain("Jev");
 	});
 });
 

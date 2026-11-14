@@ -8,7 +8,7 @@ import type { TUI } from "../src/index";
 import { CopySelectorComponent } from "../src/overlays/copy-selector";
 import { type BranchVariantPath, RewindSelectorComponent } from "../src/overlays/rewind-selector";
 import { TreeSelectorComponent, type TreeSelectorNode } from "../src/overlays/tree-selector";
-import { initTheme } from "../src/theme";
+import { initTheme, setTheme } from "../src/theme";
 
 const pickerCx: DescribeContext = {
 	cols: 120,
@@ -81,12 +81,20 @@ const typeText = (component: { handleInput(data: string): void }, text: string) 
 };
 
 describe("rewind page", () => {
-	function rewind(deps: { selected?: string[]; cancelled?: { count: number }; siblings?: BranchVariantPath[] } = {}) {
+	function rewind(
+		deps: {
+			selected?: string[];
+			cancelled?: { count: number };
+			siblings?: BranchVariantPath[];
+			startAt?: string;
+		} = {},
+	) {
 		return new RewindSelectorComponent(transcript(), {
 			ui,
 			cwd: "/tmp",
 			requestRender: () => {},
 			siblingPaths: id => (id === "u2" ? (deps.siblings ?? []) : []),
+			startAt: deps.startAt,
 			onSelect: id => deps.selected?.push(id),
 			onCancel: () => {
 				if (deps.cancelled) deps.cancelled.count++;
@@ -183,6 +191,26 @@ describe("rewind page", () => {
 		expect(selected).toEqual(["t1", "u1"]);
 		selector.handleNativeEvent({ type: "action", key: "cancel", act: "cancel", mods: [] });
 		expect(cancelled.count).toBe(1);
+	});
+
+	test("a click or tap on a turn picks it, and Rewind here rewinds there", () => {
+		const selected: string[] = [];
+		const selector = rewind({ selected });
+		const first = selector.describeScreen(pickerCx).main[0]!;
+		if ("k" in first) throw new Error("expected the first prompt's block");
+		expect(first.describe?.(pickerCx)?.p?.actions?.click).toBe("rewind-pick");
+		first.handleNativeEvent?.({ type: "action", key: "", act: "rewind-pick", mods: [] });
+		expect(marks(selector.describeScreen(pickerCx).main)).toEqual(["here:main:u1", "pick", "drop"]);
+		selector.handleNativeEvent({ type: "action", key: "rewind", act: "rewind", mods: [] });
+		expect(selected).toEqual(["u1"]);
+	});
+
+	test("opens on the turn a hold menu's Rewind to here… names", () => {
+		const selected: string[] = [];
+		const selector = rewind({ selected, startAt: "a2" });
+		expect(marks(selector.describeScreen(pickerCx).main)).toEqual(["-", "here:main:a2", "pick", "drop"]);
+		selector.handleInput("\r");
+		expect(selected).toEqual(["a2"]);
 	});
 
 	test("filtering shows only matching turns; Cancel leaves the filter before closing", () => {
@@ -333,6 +361,28 @@ describe("session tree picker", () => {
 		expect(byId.get("u3")?.badges).toEqual([{ text: "idea", tone: "warning" }]);
 		expect((byId.get("u2")?.depth ?? 0) > (byId.get("a1")?.depth ?? 0)).toBe(true);
 		expect(p.selected).toBe("a3");
+	});
+
+	test("an open tree keeps user and assistant labels apart as the theme switches", async () => {
+		const selector = treeSelector();
+		const labelStyles = () => {
+			const items = treeProps(selector).items ?? [];
+			return ["u1", "a1"].map(id => {
+				const label = items.find(item => item.id === id)?.label;
+				return typeof label === "string" ? undefined : label?.[0]?.s;
+			});
+		};
+		try {
+			await setTheme("dark-github");
+			expect(labelStyles()).toEqual(["accent strong", "success"]);
+			// `dark-terminal` paints `accent` and `success` the same green.
+			await setTheme("dark-terminal");
+			expect(labelStyles()).toEqual(["accent strong", "statusLinePath"]);
+			await setTheme("dark-github");
+			expect(labelStyles()).toEqual(["accent strong", "success"]);
+		} finally {
+			await initTheme(false);
+		}
 	});
 
 	test("message labels fold \\r and Unicode line separators without flattening the selected preview", () => {

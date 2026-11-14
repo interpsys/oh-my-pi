@@ -16,6 +16,8 @@ export * from "./json-rpc";
 export * from "./loader";
 // Manager
 export * from "./manager";
+// Process opt-out (--no-mcp / OMP_NO_MCP)
+export * from "./process-opt-out";
 // OAuth Discovery
 export * from "./oauth-discovery";
 // Tool bridge

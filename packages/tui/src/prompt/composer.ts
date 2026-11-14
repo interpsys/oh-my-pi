@@ -1,10 +1,10 @@
 import { getComposerStyle } from "../components/composer/registry";
 import { Spacer } from "../components/spacer";
 import type { StatusLineComponent } from "../status-line/component";
-import { compositeLineAt } from "../render/composite";
-import { type ExtensionLinkLabel, extensionLinkLabels, linkHintTags } from "../render/extension-links";
+import { extensionLinkLabels } from "../render/extension-links";
+import { LinkHints, type ViewportLink, viewportLinkTargets } from "../render/link-hints";
 import type { StatusLineSession } from "../status-line/host";
-import { createStartupStatusLine, type StatusLineStartupData } from "../status-line/startup";
+import { createStartupStatusLine, type StatusLineStartupData, startupComposerState } from "../status-line/startup";
 import { isInsideTerminalMultiplexer } from "../terminal-multiplexer";
 import { ProcessTerminal, type Terminal } from "../terminal";
 import {
@@ -19,13 +19,13 @@ import {
 	type ViewportSize,
 } from "../tui";
 import { wrapLiteralLine } from "../utils";
-import type { NativeChild, NativeSurface, NativeSurfaceProvider } from "../native/node";
+import type { DescribeContext, NativeChild, NativeSurface, NativeSurfaceProvider } from "../native/node";
 import { sameItems } from "../native/memo";
 import { postmortem } from "@oh-my-pi/pi-utils";
 import { CustomEditor } from "./custom-editor";
 import type { WordCompletionMethod } from "./word-completion";
 import { type AnimationFrame, TranscriptContainer } from "../chrome/transcript-container";
-import { WelcomeComponent } from "./welcome";
+import { type VersionUpdate, WelcomeComponent } from "./welcome";
 import { ensureThemeSync, getEditorTheme, theme } from "../theme/theme";
 
 const DOUBLE_INTERRUPT_MS = 500;
@@ -66,6 +66,8 @@ export const COMPOSER_DEFAULTS: ComposerPreferences = {
 /** Welcome data that can be supplied initially or patched as startup resolves it. */
 export interface ComposerWelcomeUpdate {
 	readonly version?: string;
+	/** Background self-update activity after the version label; `null` clears it. */
+	readonly versionUpdate?: VersionUpdate | null;
 }
 
 /**
@@ -104,6 +106,13 @@ export interface RuntimeChildrenOptions {
 	 */
 	readonly nativeDock?: readonly Component[];
 	/**
+	 * Below-transcript containers whose children continue `main` on a TSP
+	 * terminal, one block each after the transcript's, instead of riding in the
+	 * dock: output on its way into the transcript (shell runs deferred until the
+	 * next prompt) reads as its tail, and keeps its block when it moves in.
+	 */
+	readonly nativeTail?: readonly Container[];
+	/**
 	 * Below-transcript roots the user opens and closes (the editor surface that
 	 * drafts and dialogs swap into, docked reports). Their rows never become
 	 * part of the post-run chrome floor, so collapsing them refills the screen.
@@ -113,10 +122,44 @@ export interface RuntimeChildrenOptions {
 	 * Transient roots that clear themselves (todo and subagent HUDs, progress).
 	 * Their first paint can be their tallest, e.g. a restored todo list on a
 	 * resumed session, so unlike {@link transientChrome} it is never treated as
-	 * their resting height: all of their rows stay out of the floor. Roots listed
-	 * here are transient and need not also appear in `transientChrome`.
+	 * their resting height: their rows start outside the floor. With the default
+	 * scrollback policy they use only rows the floor-budget transcript leaves
+	 * free: whole roots, compact summaries, or nothing under pressure. One still
+	 * up once the idle settle window has passed is billed like any other idle
+	 * chrome, so the rows it displaces retire to scrollback and it shows whole.
+	 * Roots listed here are transient and need not also appear in `transientChrome`.
 	 */
 	readonly selfClearingChrome?: readonly Component[];
+	/**
+	 * Roots whose rows are billed at their current height on every frame and
+	 * never folded into the floor: the working row, whose height changes with
+	 * each run. Their rows always count toward retirement, so finished transcript
+	 * rows reach native history as soon as they leave the screen instead of being
+	 * clipped above it while the root is taller than the floor. When a root
+	 * shrinks, the editor moves up into the rows it gave up. A root listed here
+	 * is billed even if it also appears in `transientChrome` or
+	 * `selfClearingChrome`.
+	 */
+	readonly billedChrome?: readonly Component[];
+}
+
+/**
+ * Optional, noninteractive one-row summary for expendable chrome under height
+ * pressure. Called after the full render; it must not register images or change
+ * that render's row hit map. Omit the summary when there is nothing to show.
+ * Plain containers inherit their first available child's summary.
+ */
+export interface CompactChrome {
+	renderCompact(width: number): string | undefined;
+}
+
+interface BelowTranscriptChrome {
+	rows: string[];
+	spans: ViewportClickSpan[];
+	roots: { root: Component; start: number; end: number }[];
+	transientRows: number;
+	selfClearingRows: number;
+	billedRows: number;
 }
 
 /** Controls the first terminal paint for a composer that does not already own the terminal. */
@@ -179,45 +222,11 @@ export function routeViewportClick(spans: readonly ViewportClickSpan[], index: n
 	return [];
 }
 
-/** An extension link label drawn on a mutable-viewport line: what a click or hint tag lands on. */
-export interface ViewportLink {
-	readonly url: string;
-	/** Mutable-viewport line the label is drawn on. */
-	readonly row: number;
-	/** First cell of the label's part on that line. */
-	readonly start: number;
-}
-
-/** An extension link label tagged for picking by keyboard in link-hint mode. */
-interface ViewportLinkHint {
-	readonly tag: string;
-	readonly link: ViewportLink;
-}
-
 /**
  * Called once when link-hint mode ends; `reason` is `"crowded"` when a row held more links than
  * their tags could fit side by side, so no tags were drawn.
  */
 export type LinkHintsEnd = (reason?: "crowded") => void;
-
-/**
- * The extension link labels drawn on `rows`, top to bottom, a wrapped label once at its first row:
- * a row's first label continues the previous row's last label when that has the same marker id
- * and ends its row.
- */
-function viewportLinkTargets(rows: readonly string[]): ViewportLink[] {
-	const targets: ViewportLink[] = [];
-	let previous: ExtensionLinkLabel | undefined;
-	for (let row = 0; row < rows.length; row++) {
-		const labels = extensionLinkLabels(rows[row]!);
-		for (const [index, label] of labels.entries()) {
-			if (index === 0 && previous?.endsRow && previous.id === label.id) continue;
-			targets.push({ url: label.url, row, start: label.start });
-		}
-		previous = labels.at(-1);
-	}
-	return targets;
-}
 
 /**
  * Nested background opens inside a hovered row. The band wraps the line, so a
@@ -255,10 +264,12 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#preferences: ComposerPreferences;
 	#welcome: WelcomeComponent | undefined;
 	#version = "";
+	#versionUpdate: VersionUpdate | null = null;
 	#headerBefore: readonly Component[] = [];
 	#headerAfter: readonly Component[] = [];
 	#runtimeChildren: readonly Component[] = [];
 	#nativeDock: readonly Component[] | undefined;
+	#nativeTail: readonly Container[] = [];
 	/** Cache-driven status line shown until {@link setStatusComponent} mounts the session's. */
 	#startupStatus: StatusLineComponent | undefined;
 	#runtimeMounted = false;
@@ -299,12 +310,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#lastViewportRows: readonly string[] = [];
 	/** Click-candidate id under the pointer, painted with the hover band. Id-anchored so it follows streaming rows. */
 	#hoveredClickId: string | undefined;
-	/**
-	 * Keyboard link-hint mode: the tags drawn over the extension links on screen (`undefined` until
-	 * the first frame after `startLinkHints` assigns them), the letters typed so far, and what to run
-	 * when the mode ends for any reason.
-	 */
-	#linkHints: { hints: ViewportLinkHint[] | undefined; typed: string; onEnd: LinkHintsEnd } | undefined;
+	/** Keyboard link-hint mode: its tags (assigned by the first frame after `startLinkHints`) and what to run when it ends. */
+	#linkHints: { hints: LinkHints; onEnd: LinkHintsEnd } | undefined;
 	/** Width of the last painted viewport, which `#lastViewportRows` was laid out for. */
 	#lastViewportWidth = 0;
 	// Hard-row prefix currently above the native viewport. The first resize
@@ -328,6 +335,11 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	// Settled idle chrome has retired rows; contraction must preserve native history.
 	#chromeFloorPromoted = false;
 	#runActive = false;
+	// Billed-chrome rows the last composition counted toward retirement; see renderFrame.
+	#billedChromeRows = 0;
+	// Billed chrome shrank and no emitted paint has moved the editor up yet.
+	#billedChromeContracted = false;
+	#billedChrome: ReadonlySet<Component> = new Set();
 	#transientChrome: ReadonlySet<Component> = new Set();
 	#selfClearingChrome: ReadonlySet<Component> = new Set();
 	// Fewest rows the user-driven transient roots have painted since mount; only rows above it are excluded from the floor.
@@ -399,6 +411,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			this.#startupStatus = createStartupStatusLine(statusLine);
 			this.#statusHost.setComponent(this.#startupStatus);
 			this.#startupStatus.attachToEditor(this.editor, getComposerStyle(this.#preferences.composerShape));
+			const state = startupComposerState(statusLine);
+			this.editor.composerState = () => state;
 		}
 		// Emergency controls stay active until InteractiveMode installs configured bindings.
 		// They deliberately mirror the interactive editor's contract so a stalled startup
@@ -461,27 +475,37 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
 		const preRoots = this.#renderRoots(roots.slice(0, transcriptIndex), width);
 		const afterRoots = roots.slice(transcriptIndex + 1);
-		const after: string[] = [];
-		const afterSpans: ViewportClickSpan[] = [];
-		const ends: { root: Component; end: number }[] = [];
-		let transientRows = 0;
-		let selfClearingRows = 0;
-		for (const root of afterRoots) {
-			const start = after.length;
-			this.#renderBelowRoot(root, width, after, afterSpans);
-			if (this.#selfClearingChrome.has(root)) selfClearingRows += after.length - start;
-			else if (this.#transientChrome.has(root)) transientRows += after.length - start;
-			ends.push({ root, end: after.length });
-		}
-		this.#rowsBelow = new Map(ends.map(({ root, end }) => [root, after.length - end]));
-		const transientFloor = this.#syncTransientFloor(transientRows);
-		// Eligible chrome excludes user-driven transient rows above their resting height and every
-		// self-clearing row; contraction, floor and rebaseline all use it.
-		const eligibleChrome = after.length - (transientRows - transientFloor) - selfClearingRows;
-		const promotedChromeContracted = this.#chromeFloorPromoted && eligibleChrome < (this.#chromeFloor ?? 0);
-		this.#chromeFloor = Math.min(this.#chromeFloor ?? eligibleChrome, eligibleChrome);
-		this.#rebaselineChromeFloor(this.#runActive || transcript.hasActiveBlock(), eligibleChrome);
-		const belowFloor = this.#preferences.completeScrollback ? after.length : this.#chromeFloor;
+		const chrome = this.#renderBelowRoots(afterRoots, width);
+		const transientFloor = this.#syncTransientFloor(chrome.transientRows);
+		// Billable chrome excludes user-driven transient rows above their resting height and every
+		// billed row (those count at their current height below). Eligible chrome also excludes
+		// every self-clearing row: those start outside the floor and yield their rows to the
+		// transcript plan below. A HUD that is still up once the idle settle window has passed
+		// is billed like any other idle chrome (see #rebaselineChromeFloor): the rows it would
+		// displace retire to scrollback, and a restored todo list or a subagent panel can stay up
+		// for the rest of the session.
+		const billableChrome = chrome.rows.length - (chrome.transientRows - transientFloor) - chrome.billedRows;
+		const eligibleChrome = billableChrome - chrome.selfClearingRows;
+		const promotedChromeContracted = this.#chromeFloorPromoted && billableChrome < (this.#chromeFloor ?? 0);
+		// Contraction follows immediately: the floor never exceeds what is billable now, and before a
+		// promotion it never exceeds the eligible chrome either.
+		const floorCap = this.#chromeFloorPromoted ? billableChrome : eligibleChrome;
+		this.#chromeFloor = Math.min(this.#chromeFloor ?? eligibleChrome, floorCap);
+		this.#rebaselineChromeFloor(this.#runActive || transcript.hasActiveBlock(), billableChrome);
+		// The working row grows and shrinks with every run, so a floor (its
+		// smallest height) undercounts it whenever it is taller: retirement would
+		// clip that many finished rows off the top of the viewport before they
+		// reach native history, a scrolled-back terminal would watch that seam
+		// shift on every commit, and the rows would reappear, moving the whole
+		// screen, when it shrank. Bill its current rows on every frame instead;
+		// when it shrinks, the editor moves up into the rows it gave up, because
+		// committed rows cannot come back down. With `completeScrollback` all
+		// chrome counts at its current height, the working row included, and a
+		// shrink leaves its documented blank rows above the editor instead.
+		const completeScrollback = this.#preferences.completeScrollback;
+		if (!completeScrollback && chrome.billedRows < this.#billedChromeRows) this.#billedChromeContracted = true;
+		this.#billedChromeRows = chrome.billedRows;
+		const belowFloor = completeScrollback ? chrome.rows.length : this.#chromeFloor + chrome.billedRows;
 		// Offer history under capacity pressure only: blocks stay live (and keep
 		// reflowing to the current width) while the screen has room. A batch
 		// leaves the mutable viewport in the same frame it is appended, so its
@@ -491,6 +515,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		// Retirement measures the same live blocks the viewport lays out below;
 		// one open frame renders each of them once for both.
 		transcript.beginFrame(frame);
+		transcript.completeScrollback = this.#preferences.completeScrollback;
 		const history = this.#offerHistory(transcript, width, rows, preRoots.length + belowFloor);
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
@@ -498,10 +523,17 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		// The live tail is laid out against the same baseline retirement is
 		// billed against, so its compaction allocator (one row per block, no
 		// inter-block blanks) engages only when a block genuinely cannot retire.
-		// Rows the chrome above its floor displaces are clipped from the top by
-		// the `drop` slice below; they stay live until the chrome shrinks. With
-		// `completeScrollback` none are held back.
+		// User-driven chrome above its floor may still cover the live tail until
+		// it shrinks. Self-clearing HUDs instead yield their rows to this plan;
+		// their displayed height never feeds back into retirement or the floor.
 		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - belowFloor), frame);
+		if (!completeScrollback) {
+			const fixedChrome = chrome.rows.length - chrome.selfClearingRows;
+			this.#boundSelfClearingChrome(chrome, width, Math.max(0, rows - before.length - active.length - fixedChrome));
+		}
+		const after = chrome.rows;
+		const afterSpans = chrome.spans;
+		this.#rowsBelow = new Map(chrome.roots.map(({ root, end }) => [root, after.length - end]));
 		const activeSpans: ViewportClickSpan[] = [];
 		for (const span of transcript.getLastViewportSpans()) {
 			const ids = (span.component as Partial<{ getClickFocusAgentIds(): string[] }>).getClickFocusAgentIds?.();
@@ -527,10 +559,16 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		// rows back out of native scrollback. Let the editor move up instead of
 		// inserting a seam band; subsequent frames retain that natural anchor
 		// until new output fills the screen again. Shell history stays untouched.
-		const slack =
-			filledHistoryRows === undefined || promotedChromeContracted
+		const fillSlack =
+			filledHistoryRows === undefined
 				? 0
 				: Math.max(0, rows - Math.min(rows, filledHistoryRows + (history?.rows.length ?? 0)) - mutable.length);
+		// The TUI can discard a composition (an image-budget retry, a deferred
+		// first image paint), so a billed contraction holds until a paint lands
+		// where the screen has no slack to fill: the editor moved up, or output
+		// filled the rows back in.
+		if (fillSlack === 0) this.#billedChromeContracted = false;
+		const slack = promotedChromeContracted || this.#billedChromeContracted ? 0 : fillSlack;
 		// Park the slack below the live rows rather than above them. Above, it
 		// splits the on-screen history from the live tail and reads as a hole
 		// punched into whatever was streaming — a table's rows included — and
@@ -566,7 +604,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			const visibleHeaderRows = Math.max(0, rows - (mutable.length + drop));
 			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
 		}
-		return { history, viewport: this.#paintLinkHints(this.#paintHoverBand(mutable, spans), width) };
+		const painted = this.#paintHoverBand(mutable, spans);
+		return { history, viewport: this.#linkHints?.hints.paint(painted, width) ?? painted };
 	}
 
 	/**
@@ -580,27 +619,9 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#syncLinkHints(rows: readonly string[], width: number): void {
 		const state = this.#linkHints;
 		if (state === undefined) return;
-		const targets = viewportLinkTargets(rows);
-		const hints = state.hints;
-		if (hints === undefined) {
-			state.hints = linkHintTags(targets.length).map((tag, index) => ({ tag, link: targets[index]! }));
-			if (state.hints.length === 0) {
-				this.#endLinkHints();
-				return;
-			}
-		} else {
-			const unchanged =
-				targets.length >= hints.length &&
-				hints.every(({ link }, index) => link.url === targets[index]!.url && link.start === targets[index]!.start);
-			if (!unchanged) {
-				this.#endLinkHints();
-				return;
-			}
-			state.hints = hints.map(({ tag }, index) => ({ tag, link: targets[index]! }));
-		}
-		const cells = new Map<number, number>();
-		for (const { tag, link } of state.hints) cells.set(link.row, (cells.get(link.row) ?? 0) + tag.length);
-		if ([...cells.values()].some(count => count > width)) this.#endLinkHints("crowded");
+		const kept = state.hints.tagged ? state.hints.follow(rows) : state.hints.assign(rows) > 0;
+		if (!kept) this.#endLinkHints();
+		else if (state.hints.crowded(width)) this.#endLinkHints("crowded");
 	}
 
 	#endLinkHints(reason?: "crowded"): void {
@@ -611,54 +632,15 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	}
 
 	/**
-	 * Draw every tag the typed letters still lead to over the start of its label. Tags on one row
-	 * never overlap: one that would land on an earlier tag moves right, and tags that would run past
-	 * the right edge move left, so each stays readable as long as the row has room for them all.
-	 */
-	#paintLinkHints(viewport: string[], width: number): string[] {
-		const state = this.#linkHints;
-		if (state?.hints === undefined) return viewport;
-		const rows = new Map<number, { tag: string; col: number }[]>();
-		for (const { tag, link } of state.hints) {
-			if (viewport[link.row] === undefined || !tag.startsWith(state.typed)) continue;
-			let row = rows.get(link.row);
-			if (!row) rows.set(link.row, (row = []));
-			row.push({ tag, col: link.start });
-		}
-		const painted = [...viewport];
-		for (const [index, tags] of rows) {
-			tags.sort((a, b) => a.col - b.col);
-			let free = 0;
-			for (const placed of tags) {
-				placed.col = Math.max(placed.col, free);
-				free = placed.col + placed.tag.length;
-			}
-			let limit = width;
-			for (let i = tags.length - 1; i >= 0; i--) {
-				const placed = tags[i]!;
-				placed.col = Math.max(0, Math.min(placed.col, limit - placed.tag.length));
-				limit = placed.col;
-			}
-			let line = painted[index]!;
-			for (const { tag, col } of tags) {
-				// Raw SGR like the hover highlight: chalk's inverse/bold drop out when it detects no color.
-				const styled = `\x1b[1;7m${theme.fg("accent", tag)}\x1b[22;27m`;
-				line = compositeLineAt(line, styled, col, tag.length, width);
-			}
-			painted[index] = line;
-		}
-		return painted;
-	}
-
-	/**
 	 * Describe the whole surface for a TSP terminal. `main` is the flowing
 	 * document: the header (welcome, extras) and every transcript block as its
-	 * own component child. `dock` is the live chrome below the transcript in
-	 * render order: pending messages, HUDs, the working row, the editor and the
-	 * status line. There is no history/viewport split: retirement, resize
-	 * replay and hover bands are ANSI concerns.
+	 * own component child, then the children of the
+	 * {@link RuntimeChildrenOptions.nativeTail} roots. `dock` is the live chrome
+	 * below the transcript in render order: pending messages, HUDs, the working
+	 * row, the editor and the status line. There is no history/viewport split:
+	 * retirement, resize replay and hover bands are ANSI concerns.
 	 */
-	describeSurface(): NativeSurface {
+	describeSurface(cx: DescribeContext): NativeSurface {
 		if (!this.#started || this.#stopped) return this.#nativeSurface;
 		const main: NativeChild[] = [...this.#header.children];
 		const dock: NativeChild[] = [];
@@ -672,8 +654,10 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 				dock.push(...roots);
 			} else {
 				const transcript = roots[transcriptIndex] as TranscriptContainer;
-				main.push(...roots.slice(0, transcriptIndex), ...transcript.nativeBlocks());
-				dock.push(...(this.#nativeDock ?? roots.slice(transcriptIndex + 1)));
+				main.push(...roots.slice(0, transcriptIndex), ...transcript.nativeBlocks(cx));
+				for (const root of this.#nativeTail) main.push(...root.children);
+				const tail: readonly Component[] = this.#nativeTail;
+				dock.push(...(this.#nativeDock ?? roots.slice(transcriptIndex + 1).filter(root => !tail.includes(root))));
 			}
 		}
 		const previous = this.#nativeSurface;
@@ -683,6 +667,97 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			this.#nativeSurface = { main: nextMain, dock: nextDock };
 		}
 		return this.#nativeSurface;
+	}
+
+	#renderBelowRoots(roots: readonly Component[], width: number): BelowTranscriptChrome {
+		const chrome: BelowTranscriptChrome = {
+			rows: [],
+			spans: [],
+			roots: [],
+			transientRows: 0,
+			selfClearingRows: 0,
+			billedRows: 0,
+		};
+		for (const root of roots) {
+			const start = chrome.rows.length;
+			this.#renderBelowRoot(root, width, chrome.rows, chrome.spans);
+			const end = chrome.rows.length;
+			if (this.#billedChrome.has(root)) chrome.billedRows += end - start;
+			else if (this.#selfClearingChrome.has(root)) chrome.selfClearingRows += end - start;
+			else if (this.#transientChrome.has(root)) chrome.transientRows += end - start;
+			chrome.roots.push({ root, start, end });
+		}
+		return chrome;
+	}
+
+	#compactChrome(root: Component, width: number): string | undefined {
+		const compact = root as Component & Partial<CompactChrome>;
+		if (compact.renderCompact !== undefined) return compact.renderCompact(width);
+		if (root instanceof Container && root.render === Container.prototype.render) {
+			for (const child of root.children) {
+				const summary = this.#compactChrome(child, width);
+				if (summary !== undefined) return summary;
+			}
+		}
+		return undefined;
+	}
+
+	/**
+	 * Preserve the already-planned transcript. Reserve summaries first, then
+	 * expand whole HUD roots in display order with any remaining room. Never
+	 * slice a card/tree/image or retain detail click spans on a summary.
+	 */
+	#boundSelfClearingChrome(chrome: BelowTranscriptChrome, width: number, capacity: number): void {
+		if (chrome.selfClearingRows <= capacity) return;
+		const summaries = new Map<Component, string>();
+		const full = new Set<Component>();
+		let spare = capacity;
+		for (const { root, start, end } of chrome.roots) {
+			if (!this.#selfClearingChrome.has(root) || this.#billedChrome.has(root) || end === start) continue;
+			if (end - start === 1 && spare > 0) {
+				full.add(root);
+				spare--;
+				continue;
+			}
+			if (spare === 0) continue;
+			const summary = this.#compactChrome(root, width);
+			if (summary !== undefined) {
+				summaries.set(root, summary);
+				spare--;
+			}
+		}
+		for (const { root, start, end } of chrome.roots) {
+			if (!this.#selfClearingChrome.has(root) || this.#billedChrome.has(root) || full.has(root)) continue;
+			const extra = end - start - (summaries.has(root) ? 1 : 0);
+			if (extra > spare) continue;
+			full.add(root);
+			summaries.delete(root);
+			spare -= extra;
+		}
+		const rows: string[] = [];
+		const spans: ViewportClickSpan[] = [];
+		let spanIndex = 0;
+		for (const layout of chrome.roots) {
+			const { root, start, end } = layout;
+			const keepFull = !this.#selfClearingChrome.has(root) || this.#billedChrome.has(root) || full.has(root);
+			layout.start = rows.length;
+			if (keepFull) {
+				for (let index = start; index < end; index++) rows.push(chrome.rows[index]!);
+			} else {
+				const summary = summaries.get(root);
+				if (summary !== undefined) rows.push(summary);
+			}
+			while (spanIndex < chrome.spans.length && chrome.spans[spanIndex]!.start < end) {
+				const span = chrome.spans[spanIndex++]!;
+				if (keepFull) {
+					const shift = layout.start - start;
+					spans.push({ start: span.start + shift, end: span.end + shift, candidates: span.candidates });
+				}
+			}
+			layout.end = rows.length;
+		}
+		chrome.rows = rows;
+		chrome.spans = spans;
 	}
 
 	/**
@@ -798,7 +873,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	 */
 	startLinkHints(onEnd: LinkHintsEnd): void {
 		this.#endLinkHints();
-		this.#linkHints = { hints: undefined, typed: "", onEnd };
+		this.#linkHints = { hints: new LinkHints(), onEnd };
 	}
 
 	/** Whether link-hint mode is on. */
@@ -815,18 +890,11 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		const state = this.#linkHints;
 		if (state === undefined) return false;
 		// A key typed before the tags were first painted picks among the labels last drawn.
-		if (state.hints === undefined) this.#syncLinkHints(this.#lastViewportRows, this.#lastViewportWidth);
-		const hints = this.#linkHints?.hints;
-		if (hints === undefined) return false;
-		const typed = state.typed + letter.toLowerCase();
-		const matching = hints.filter(hint => hint.tag.startsWith(typed));
-		const picked = matching.length === 1 && matching[0]!.tag === typed ? matching[0]!.link : undefined;
-		if (matching.length === 0 || picked !== undefined) {
-			this.#endLinkHints();
-			return picked ?? false;
-		}
-		state.typed = typed;
-		return true;
+		if (!state.hints.tagged) this.#syncLinkHints(this.#lastViewportRows, this.#lastViewportWidth);
+		if (this.#linkHints !== state) return false;
+		const result = state.hints.type(letter);
+		if (result !== true) this.#endLinkHints();
+		return result;
 	}
 
 	/** Leave link-hint mode without picking a link. */
@@ -1093,11 +1161,22 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) return this.#renderRoots(roots, width);
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
-		const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
-		const transcriptRows = transcript.renderTail(width, Math.max(0, rows - after.length));
+		const chrome = this.#renderBelowRoots(roots.slice(transcriptIndex + 1), width);
+		const fixedChrome = chrome.rows.length - chrome.selfClearingRows;
+		// This presentation-only path has no retirement plan. Keep user-driven
+		// chrome at its actual height, but let HUDs yield to the semantic tail.
+		const belowRows = this.#preferences.completeScrollback ? chrome.rows.length : fixedChrome;
+		const transcriptRows = transcript.renderTail(width, Math.max(0, rows - belowRows));
 		const pre =
-			transcriptRows.length + after.length >= rows ? [] : this.#renderRoots(roots.slice(0, transcriptIndex), width);
-		return [...pre, ...transcriptRows, ...after];
+			transcriptRows.length + belowRows >= rows ? [] : this.#renderRoots(roots.slice(0, transcriptIndex), width);
+		if (!this.#preferences.completeScrollback) {
+			this.#boundSelfClearingChrome(
+				chrome,
+				width,
+				Math.max(0, rows - pre.length - transcriptRows.length - fixedChrome),
+			);
+		}
+		return [...pre, ...transcriptRows, ...chrome.rows];
 	}
 
 	/** Reflow accepted hard rows exactly as the restored terminal buffer will. */
@@ -1191,6 +1270,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		const welcome = this.#welcome;
 		if (!welcome) return;
 		if (update.version !== undefined) welcome.setVersion(this.#version);
+		if (update.versionUpdate !== undefined) welcome.setVersionUpdate(this.#versionUpdate);
 		this.ui.requestRender();
 	}
 
@@ -1259,8 +1339,12 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#chromeFloorPromoted = false;
 		this.#resetIdleChrome();
 		this.#nativeDock = options.nativeDock;
+		this.#nativeTail = options.nativeTail ?? [];
 		this.#transientChrome = new Set(options.transientChrome);
 		this.#selfClearingChrome = new Set(options.selfClearingChrome);
+		this.#billedChrome = new Set(options.billedChrome);
+		this.#billedChromeRows = 0;
+		this.#billedChromeContracted = false;
 		this.#transientFloor = undefined;
 		this.ui.removeChild(this.#statusHost);
 		if (this.#runtimeMounted) {
@@ -1300,10 +1384,13 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 
 	#applyWelcomeUpdate(update: ComposerWelcomeUpdate): void {
 		if (update.version !== undefined) this.#version = update.version;
+		if (update.versionUpdate !== undefined) this.#versionUpdate = update.versionUpdate;
 	}
 
 	#ensureWelcome(): void {
-		this.#welcome ??= new WelcomeComponent(this.#version);
+		if (this.#welcome) return;
+		this.#welcome = new WelcomeComponent(this.#version);
+		this.#welcome.setVersionUpdate(this.#versionUpdate);
 	}
 
 	#rebuildHeader(): void {

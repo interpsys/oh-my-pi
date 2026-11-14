@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getLogsDir, isBunTestRuntime, isEnoent, isRecord, logger } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error/flags";
-import { formatErrorMessageWithRetryAfter } from "./retry-after.js";
+import { appendRetryAfterHint, errorMessageText, getHeadersFromError } from "./retry-after.js";
 
 export type RawHttpRequestDump = {
 	provider: string;
@@ -19,6 +19,28 @@ export type CapturedHttpErrorResponse = {
 	headers?: Headers;
 	bodyText?: string;
 	bodyJson?: unknown;
+};
+
+export type RawEmptyResponseSseEvent = {
+	event: string | null;
+	data: string;
+	raw: string[];
+	parsed?: unknown;
+};
+
+export type RawEmptyResponseDump = {
+	provider: string;
+	api: string;
+	model: string;
+	endpoint?: string;
+	url?: string;
+	status?: number;
+	headers?: Record<string, string>;
+	events: RawEmptyResponseSseEvent[];
+	chunks?: unknown[];
+	truncated?: boolean;
+	omittedEvents?: number;
+	omittedBytes?: number;
 };
 
 /**
@@ -62,20 +84,28 @@ export function shouldDumpRejectedRequest(error: unknown): boolean {
 
 const RAW_HTTP_REQUEST_LINE = "raw-http-request=";
 const RAW_HTTP_REQUEST_SAVE_FAILED_LINE = "raw-http-request-save-failed=";
+const RAW_EMPTY_RESPONSE_LINE = "raw-empty-response=";
+const RAW_EMPTY_RESPONSE_SAVE_FAILED_LINE = "raw-empty-response-save-failed=";
+
+function isDiagnosticDumpLine(line: string): boolean {
+	return (
+		line.startsWith(RAW_HTTP_REQUEST_LINE) ||
+		line.startsWith(RAW_HTTP_REQUEST_SAVE_FAILED_LINE) ||
+		line.startsWith(RAW_EMPTY_RESPONSE_LINE) ||
+		line.startsWith(RAW_EMPTY_RESPONSE_SAVE_FAILED_LINE)
+	);
+}
 
 /**
- * Remove the local request-dump lines {@link appendRawHttpRequestDumpFor400} appends,
- * leaving only the provider-facing error text. Hosts that relay provider errors
- * (RPC `prompt_result`) must not leak OMP-local file paths.
+ * Remove the local request/response-dump lines {@link appendRawHttpRequestDumpFor400}
+ * and {@link appendRawEmptyResponseDump} append, leaving only the provider-facing
+ * error text. Hosts that relay provider errors (RPC `prompt_result`) must not
+ * leak OMP-local file paths.
  */
 export function stripRawHttpRequestDiagnostics(message: string): string {
 	const lines = message.split("\n");
 	let end = lines.length;
-	while (
-		end > 0 &&
-		(lines[end - 1].startsWith(RAW_HTTP_REQUEST_LINE) || lines[end - 1].startsWith(RAW_HTTP_REQUEST_SAVE_FAILED_LINE))
-	)
-		end--;
+	while (end > 0 && isDiagnosticDumpLine(lines[end - 1])) end--;
 	return end === lines.length ? message : lines.slice(0, end).join("\n");
 }
 
@@ -108,6 +138,56 @@ export async function appendRawHttpRequestDumpFor400(
 }
 
 const HTTP_DUMP_DIR_NAME = "http-400-requests";
+const EMPTY_RESPONSE_DUMP_DIR_NAME = "empty-responses";
+export const RAW_EMPTY_RESPONSE_MAX_EVENTS = 64;
+export const RAW_EMPTY_RESPONSE_MAX_BYTES = 256 * 1024;
+
+export function buildEmptyResponseDumpPayload(
+	dump: RawEmptyResponseDump,
+	message: string,
+): RawEmptyResponseDump & { errorResponse: { status: number | undefined; message: string } } {
+	return {
+		...dump,
+		endpoint: redactUrlQuery(dump.endpoint),
+		url: redactUrlQuery(dump.url),
+		headers: redactHeaders(dump.headers),
+		errorResponse: { status: dump.status, message },
+	};
+}
+
+export interface AppendRawEmptyResponseDumpOptions {
+	dumpDir?: string;
+	allowInTest?: boolean;
+}
+
+export async function appendRawEmptyResponseDump(
+	message: string,
+	dump: RawEmptyResponseDump | undefined,
+	options?: AppendRawEmptyResponseDumpOptions,
+): Promise<string> {
+	if (!dump) return message;
+	if (isBunTestRuntime() && !options?.allowInTest && !options?.dumpDir) {
+		return message;
+	}
+
+	const payload = buildEmptyResponseDumpPayload(dump, message);
+	const serialized = `${JSON.stringify(payload, null, 2)}\n`;
+	const fileName = `${Date.now()}-${Bun.hash(serialized).toString(36)}.json`;
+	const dumpDir = options?.dumpDir ?? path.join(getLogsDir(), EMPTY_RESPONSE_DUMP_DIR_NAME);
+	const filePath = path.join(dumpDir, fileName);
+
+	try {
+		await fs.mkdir(dumpDir, { recursive: true, mode: 0o700 });
+		await fs.writeFile(filePath, serialized, { mode: 0o600 });
+		pruneHttpRequestDumps(dumpDir, { keep: fileName }).catch(err => {
+			logger.warn("Failed to prune empty response dumps", { dir: dumpDir, err });
+		});
+		return `${message}\n${RAW_EMPTY_RESPONSE_LINE}${filePath}`;
+	} catch (writeError) {
+		const writeMessage = writeError instanceof Error ? writeError.message : String(writeError);
+		return `${message}\n${RAW_EMPTY_RESPONSE_SAVE_FAILED_LINE}${writeMessage}`;
+	}
+}
 const HTTP_DUMP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const HTTP_DUMP_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
 
@@ -166,16 +246,36 @@ export async function finalizeErrorMessage(
 	rawRequestDump: RawHttpRequestDump | undefined,
 	capturedErrorResponse?: CapturedHttpErrorResponse,
 ): Promise<string> {
-	let message = formatErrorMessageWithRetryAfter(error, capturedErrorResponse?.headers);
-	const capturedMessage = formatCapturedHttpError(capturedErrorResponse);
-	if (capturedMessage) {
-		if (/\bstatus code\s*\(no body\)/i.test(message)) {
-			message = `${capturedErrorResponse?.status ?? "HTTP"} status code: ${capturedMessage}`;
-		} else if (!message.includes(capturedMessage)) {
-			message = `${message}\n${capturedMessage}`;
-		}
-	}
+	const captured = formatCapturedHttpErrorParts(capturedErrorResponse);
+	const body = captured
+		? mergeCapturedBody(errorMessageText(error), captured, capturedErrorResponse?.status)
+		: errorMessageText(error);
+	const message = appendRetryAfterHint(body, capturedErrorResponse?.headers ?? getHeadersFromError(error));
 	return appendRawHttpRequestDumpFor400(message, error, rawRequestDump);
+}
+
+const STATUS_PREFIX_PATTERN = /^\s*\d{3}\s+/;
+
+/**
+ * Fold the captured provider body into the thrown message so it prints once.
+ * Works on the message before any retry hint is appended: OpenAI-family errors
+ * cap the body they interpolate, so the thrown message may hold only a prefix
+ * of the captured body, which the captured copy then replaces.
+ */
+function mergeCapturedBody(message: string, captured: CapturedHttpErrorText, status: number | undefined): string {
+	if (/\bstatus code\s*\(no body\)/i.test(message)) {
+		return `${status ?? "HTTP"} status code: ${captured.text}`;
+	}
+	const statusPrefix = STATUS_PREFIX_PATTERN.exec(message)?.[0] ?? "";
+	const body = message.slice(statusPrefix.length).trimEnd();
+	const carriesTruncatedBody = body.length > 0 && body.length < captured.core.length && captured.core.startsWith(body);
+	if (carriesTruncatedBody) return withSuffix(`${statusPrefix}${captured.core}`, captured);
+	if (message.includes(captured.core)) return withSuffix(message, captured);
+	return `${message}\n${captured.text}`;
+}
+
+function withSuffix(message: string, captured: CapturedHttpErrorText): string {
+	return captured.suffix && !message.includes(captured.suffix) ? `${message}${captured.suffix}` : message;
 }
 
 /**
@@ -285,18 +385,29 @@ export function redactHeaders<T>(headers: Record<string, T> | undefined): Record
 	return redacted;
 }
 
-function formatCapturedHttpError(captured: CapturedHttpErrorResponse | undefined): string | undefined {
+interface CapturedHttpErrorText {
+	/** Provider-supplied message with the envelope's structured fields removed. */
+	core: string;
+	/** `core` followed by the `(type=… param=… code=…)` suffix when the payload carries one. */
+	text: string;
+	/** Suffix alone, leading space included; absent when the payload has no type/param/code. */
+	suffix?: string;
+}
+
+function formatCapturedHttpErrorParts(
+	captured: CapturedHttpErrorResponse | undefined,
+): CapturedHttpErrorText | undefined {
 	if (!captured) return undefined;
 	const bodyText = captured.bodyText?.trim();
 	if (!bodyText) return undefined;
 	const payload = parseCapturedErrorPayload(captured);
-	if (!payload) return bodyText;
+	if (!payload) return { core: bodyText, text: bodyText };
 
 	const errorPayload = getObjectProperty(payload, "error") ?? payload;
 	// {"error": "string"} — the error value is a plain string, not a nested object.
 	// Fall back to it when the structured fields ("message", etc.) are absent.
 	const stringError = errorPayload === payload ? getStringProperty(payload, "error") : undefined;
-	const message =
+	const core =
 		getStringProperty(errorPayload, "message") ?? getStringProperty(payload, "message") ?? stringError ?? bodyText;
 	const extras = [
 		getStringProperty(errorPayload, "type") ?? getStringProperty(payload, "type"),
@@ -309,7 +420,9 @@ function formatCapturedHttpError(captured: CapturedHttpErrorResponse | undefined
 			if (index === 1) return `param=${value}`;
 			return `code=${value}`;
 		});
-	return extras.length > 0 ? `${message} (${extras.join(" ")})` : message;
+	if (extras.length === 0) return { core, text: core };
+	const suffix = ` (${extras.join(" ")})`;
+	return { core, text: `${core}${suffix}`, suffix };
 }
 
 function parseCapturedErrorPayload(captured: CapturedHttpErrorResponse): Record<string, unknown> | undefined {

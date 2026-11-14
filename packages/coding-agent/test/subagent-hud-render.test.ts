@@ -164,7 +164,7 @@ describe("subagent HUD lines", () => {
 			];
 			cfgTaskShowResolvedModelBadge.override(Settings.instance, false);
 			const disabled = render(sessions);
-			expect(disabled).toContain(`${theme.status.done} HiddenBadge: Inspect rendering`);
+			expect(disabled).toContain(`${theme.status.running} HiddenBadge: Inspect rendering`);
 			expect(disabled).not.toContain("openai/gpt-5");
 			expect(disabled).not.toContain(theme.icon.advisor);
 
@@ -244,7 +244,7 @@ describe("subagent HUD lines", () => {
 					progress: makeProgress({ id: "LegacyWorker", resolvedModel: "custom/model:high" }),
 				}),
 			]);
-			expect(out).toContain(`${theme.status.done} custom/model:high LegacyWorker`);
+			expect(out).toContain(`${theme.status.running} custom/model:high LegacyWorker`);
 			expect(out).not.toContain(theme.thinking.high.split(" ")[0]);
 		});
 	});
@@ -521,6 +521,10 @@ describe("subagent HUD lines", () => {
 	});
 
 	describe("live preview", () => {
+		afterEach(() => {
+			vi.restoreAllMocks();
+		});
+
 		it("shows the current tool call only when enabled", () => {
 			const sessions = [
 				makeSession({
@@ -623,6 +627,8 @@ describe("subagent HUD lines", () => {
 		});
 
 		it("shortens a path argument by its key but keeps a literal search pattern as written", () => {
+			// A fixed home: the detail is capped at 40 columns, which would cut the literal pattern under a long HOME.
+			vi.spyOn(os, "homedir").mockReturnValue(path.join(path.sep, "home", "tester"));
 			const homeFile = `${os.homedir()}/.ssh/config`;
 			const preview = (key: string) =>
 				render(
@@ -842,6 +848,22 @@ describe("SubagentHudComponent click rows", () => {
 		expect(hud.getClickAgentAtRow(-1)).toBeUndefined();
 	});
 
+	it("keeps the running count and hub shortcut in a bounded summary without changing detail hit maps", () => {
+		const sessions = ["Alpha", "Beta", "Gamma", "Delta"].map(id => makeSession({ id }));
+		const lines = renderSubagentHudLines(sessions, 120, false, false, "ctrl+g");
+		const hud = new SubagentHudComponent(lines, ["Alpha", "Beta", "Gamma"], 5);
+		const full = hud.render(120);
+		const owners = full.map((_row, row) => hud.getClickAgentAtRow(row));
+
+		const summary = Bun.stripANSI(hud.renderCompact(120) ?? "");
+		expect(summary).toContain("4 running");
+		expect(summary).toContain("ctrl+g");
+		expect(summary).not.toContain("Alpha");
+		expect(Bun.stringWidth(hud.renderCompact(12) ?? "")).toBeLessThanOrEqual(12);
+		expect(full.map((_row, row) => hud.getClickAgentAtRow(row))).toEqual(owners);
+		expect(hud.render(120)).toEqual(full);
+	});
+
 	it("resolves the expander row to the toggle sentinel", () => {
 		const hud = new SubagentHudComponent(["", "Subagents", "row", "toggle"], ["Only"], 3);
 		hud.render(120);
@@ -956,7 +978,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 			settings: Settings.isolated({ "startup.quiet": true }),
 			modelRegistry,
 		});
-		mode = new InteractiveMode(session, "test", undefined, undefined, undefined, undefined, eventBus);
+		mode = new InteractiveMode(session, "test", undefined, undefined, undefined, eventBus);
 	});
 
 	afterEach(async () => {

@@ -163,6 +163,36 @@ if "__omp_prelude_loaded__" not in globals():
         _emit_status("write", path=str(p), chars=len(content))
         return p
 
+    class ShellError(RuntimeError):
+        """An ``sh(...)`` command that exited non-zero (``exit_code``) or timed out (``exit_code`` None)."""
+
+        def __init__(self, message: str, output: str, exit_code: int | None):
+            super().__init__(message)
+            self.output = output
+            self.exit_code = exit_code
+
+    def sh(command: str, cwd: str | Path | None = None, timeout: float | None = None) -> str:
+        """Run ``command`` on the embedded bash engine and return its output.
+
+        The host side lives in ``eval/shell-bridge.ts``. Raises ShellError on a
+        non-zero exit or timeout.
+        """
+        if not isinstance(command, str):
+            raise TypeError(f"sh() expects a command string (got {type(command).__name__})")
+        args = {"command": command}
+        if cwd is not None:
+            args["cwd"] = str(cwd)
+        if timeout is not None:
+            args["timeout"] = timeout
+        result = _bridge_call("__shell__", args)
+        output = result.get("output", "")
+        exit_code = result.get("exitCode")
+        if exit_code == 0:
+            return output
+        status = f"timed out after {timeout}s" if result.get("timedOut") else f"exited with code {exit_code}"
+        detail = f"\n{output.rstrip()}" if output else ""
+        raise ShellError(f"$ {command}: {status}{detail}", output, exit_code)
+
     def output(
         *ids: str,
         format: str = "raw",
@@ -500,6 +530,20 @@ if "__omp_prelude_loaded__" not in globals():
         )
         return _surface_bridged_tool_images(value)
 
+    def _unwrap_mcp(value):
+        """MCP envelopes (`details` has `serverName` + `mcpToolName`) become their payload: structuredContent, else JSON text, else text; an error result raises."""
+        details = value.get("details") if isinstance(value, dict) else None
+        if not isinstance(details, dict) or not isinstance(details.get("serverName"), str) or not isinstance(details.get("mcpToolName"), str):
+            return value
+        if value.get("hasError"):
+            raise RuntimeError(value["text"])
+        if "structuredContent" in details:
+            return details["structuredContent"]
+        try:
+            return json.loads(value["text"])
+        except ValueError:
+            return value["text"]
+
     class _ToolCallable:
         """Invokes one host-side tool via the loopback HTTP bridge."""
 
@@ -522,7 +566,7 @@ if "__omp_prelude_loaded__" not in globals():
                 )
             merged.update(kwargs)
             value = await asyncio.to_thread(_bridge_call, self._name, merged)
-            return _surface_bridged_tool_images(value)
+            return _unwrap_mcp(_surface_bridged_tool_images(value))
 
     def _annotation_schema(annotation) -> dict:
         """Map supported Python annotations to JSON Schema."""
@@ -539,7 +583,8 @@ if "__omp_prelude_loaded__" not in globals():
             return schema
         if origin is typing.Literal:
             return {"enum": list(args)}
-        if origin in (typing.Union, types.UnionType):
+        # `X | Y` unions (types.UnionType) exist from Python 3.10 only.
+        if origin in (typing.Union, getattr(types, "UnionType", typing.Union)):
             non_null = [item for item in args if item is not type(None)]
             if len(non_null) == 1 and len(non_null) != len(args):
                 return {
@@ -783,6 +828,14 @@ if "__omp_prelude_loaded__" not in globals():
         __slots__ = ()
         kind = "completion"
 
+        @property
+        def attempts(self):
+            snapshot = _bridge_call(
+                "__status__",
+                {"item": {"kind": self.kind, "id": self.id}},
+            )
+            return snapshot.get("attempts", []) if isinstance(snapshot, dict) else []
+
         def __repr__(self):
             return f"<completion {self.id}>"
 
@@ -895,7 +948,7 @@ if "__omp_prelude_loaded__" not in globals():
             return f"<judgment {self.key!r} {self.answers!r}>"
 
     class JudgmentBatch:
-        """Host-owned bulk judgment run. Pull settled items with ``await drain()`` across as many cells as needed."""
+        """Host-owned bulk judgment run. ``await batch`` waits until every item settled and returns the batch; or pull settled items with ``await drain()`` across as many cells as needed."""
 
         __slots__ = ("id", "total", "intent")
 
@@ -908,8 +961,18 @@ if "__omp_prelude_loaded__" not in globals():
             return _bridge_call("__judge_batch__", {"op": op, "id": self.id, **args})
 
         def status(self):
-            """Snapshot: ``intent``, ``done``, ``total``, ``failed``, ``running``, ``model``, ``elapsedS``."""
+            """Snapshot: ``intent``, ``done``, ``total``, ``failed``, ``running``, ``model`` (``None`` before any answer, ``"mixed"`` when several answered), ``models`` (answers per model), ``elapsedS``."""
             return self._call("status")
+
+        def __await__(self):
+            async def settle():
+                # Concurrent awaiters share the drain cursor, so one can see an empty drain while the run is live.
+                while True:
+                    running = (await asyncio.to_thread(self.status))["running"]
+                    if not await self.drain(None if running else 0) and not running:
+                        return self
+
+            return settle().__await__()
 
         async def drain(self, timeout=None):
             """Items settled since the last drain as ``[(key, JudgmentItem)]``; waits up to ``timeout`` seconds for at least one, else ``[]``."""
@@ -932,7 +995,7 @@ if "__omp_prelude_loaded__" not in globals():
                     yield entry
 
         def results(self):
-            """``{key: answers}`` for every item judged so far."""
+            """``{key: {"answers": answers, "model": model}}`` for every item judged so far."""
             result = self._call("results")
             return result.get("results", {}) if isinstance(result, dict) else {}
 
@@ -972,7 +1035,7 @@ if "__omp_prelude_loaded__" not in globals():
         min_ok=None,
         intent=None,
     ):
-        """Judge every state with the same ``questions`` on the host; returns a ``JudgmentBatch`` to drain across cells.
+        """Judge every state with the same ``questions`` on the host; returns a ``JudgmentBatch`` at once. ``b = await judge_batch(...)`` waits for every item and returns the batch (read ``b.results()``/``b.failed()``); a plain call drains across cells.
 
         ``states`` is ``{key: state}`` or a list (keys are indices). ``intent`` is an
         optional nonempty progress/job label. Item failures land in ``JudgmentItem.error``;
@@ -1030,6 +1093,7 @@ if "__omp_prelude_loaded__" not in globals():
         apply=None,
         merge=None,
         tools=None,
+        model=None,
     ):
         """Start a background subagent and return its handle."""
         args = {"prompt": prompt}
@@ -1049,6 +1113,8 @@ if "__omp_prelude_loaded__" not in globals():
             args["merge"] = bool(merge)
         if tools is not None:
             args["tools"] = list(tools)
+        if model is not None:
+            args["model"] = model
         result = _bridge_call("__agent__", args)
         if not isinstance(result, dict) or not isinstance(result.get("id"), str):
             raise RuntimeError("agent() did not return a handle")
@@ -1094,7 +1160,7 @@ if "__omp_prelude_loaded__" not in globals():
         def __repr__(self):
             return f"<workpool {self.name} ({self.agent}) {self.limit} agents>"
 
-    def workpool(agent=None, *, name=None, context=None, tools=None):
+    def workpool(agent=None, *, name=None, context=None, tools=None, model=None):
         """Create a pool of keep-alive subagents."""
         args = {"op": "create"}
         if agent is not None:
@@ -1105,6 +1171,8 @@ if "__omp_prelude_loaded__" not in globals():
             args["context"] = context
         if tools is not None:
             args["tools"] = list(tools)
+        if model is not None:
+            args["model"] = model
         result = _bridge_call("__workpool__", args)
         if not isinstance(result, dict) or not isinstance(result.get("name"), str):
             raise RuntimeError("workpool() did not return a pool")

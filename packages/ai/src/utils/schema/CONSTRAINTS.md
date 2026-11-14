@@ -97,8 +97,7 @@ ALLOWLIST copier instead of the shared denylist normalizer — it preserves
 `type`/`title`/`description`/`required`/`format`/`minimum`/`maximum`/
 `minLength`/`maxLength`/`pattern`/`minItems`/`maxItems`/`default`/`example`,
 converts `const` to a stringified single-entry `enum`, drops empty-string `enum`
-members (omitting an `enum` left empty), merges `allOf` first
-(branch `required` lists union), then handles `anyOf`/`oneOf` by branch types:
+members (omitting an `enum` left empty), merges `allOf` first (branch required lists union), then handles anyOf/oneOf by branch types:
 typed non-null branches of different types stay an `anyOf` (a `null` branch
 becomes `nullable: true`; branch `required` names missing from the branch's
 own `properties` are dropped) when the node has only `title`/`description`/

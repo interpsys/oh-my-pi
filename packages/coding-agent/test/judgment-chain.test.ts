@@ -2,15 +2,25 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import { Database } from "bun:sqlite";
 import * as path from "node:path";
 import type { ChatUsageEvent } from "@oh-my-pi/pi-agent-core";
-import type { Api, AssistantMessage, ChoiceQuestion, ImageContent, Model, NoulQuestion } from "@oh-my-pi/pi-ai";
+import type {
+	Api,
+	AssistantMessage,
+	ChoiceQuestion,
+	ImageContent,
+	JudgmentRequest,
+	JudgmentResult,
+	Model,
+	NoulQuestion,
+} from "@oh-my-pi/pi-ai";
 import * as ai from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { cfgModelRoles } from "@oh-my-pi/pi-coding-agent/config/model-settings";
+import { cfgJudgmentAttemptTimeoutMs, cfgModelRoles } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ChainJudge, hasNativeJudge, JudgmentCache, journalJudgmentUsage } from "@oh-my-pi/pi-coding-agent/judgment";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { tinyModelClient } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
+import * as imageResize from "@oh-my-pi/pi-coding-agent/utils/image-resize";
 import { encodeRawPng } from "@oh-my-pi/pi-coding-agent/utils/png-encode";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
@@ -116,6 +126,104 @@ function makeRegistry(models: Model<Api>[], keys: Record<string, string> = {}): 
 	return registry;
 }
 
+/** Native judges on a loopback server; the primary hangs until `recover()`. Attempts get a 200 ms deadline. */
+function nativeLoopback({
+	hangBody = false,
+	delayPrimaryMs = 0,
+	configuredFallback = true,
+}: { hangBody?: boolean; delayPrimaryMs?: number; configuredFallback?: boolean } = {}) {
+	const attempted: string[] = [];
+	const started = Promise.withResolvers<void>();
+	const pending = Promise.withResolvers<Response>();
+	let healthy = false;
+	const server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		idleTimeout: 0,
+		async fetch(request) {
+			const { model } = (await request.json()) as { model: string };
+			attempted.push(model);
+			if (model === "loopback-primary" && !healthy) {
+				started.resolve();
+				return hangBody
+					? new Response(new ReadableStream(), { headers: { "Content-Type": "application/json" } })
+					: pending.promise;
+			}
+			if (model === "loopback-primary" && delayPrimaryMs > 0) {
+				// Exercise the real HTTP/platform deadline, not a simulated timer.
+				await Bun.sleep(delayPrimaryMs);
+			}
+			return Response.json({
+				model,
+				answers: { level: { type: "choice", choice: "high", probabilities: { low: 0, high: 1 }, confidence: 1 } },
+				usage: { input_tokens: 4, output_tokens: 1 },
+			});
+		},
+	});
+	const models = ["loopback-primary", "loopback-backup"].map(
+		id =>
+			({
+				...ONLINE,
+				id,
+				name: id,
+				api: "openrouter-decisions",
+				provider: "openrouter",
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				kind: "judge",
+				reasoning: false,
+				input: ["text", "image"],
+			}) as Model,
+	);
+	const settings = Settings.isolated({
+		modelRoles: { judge: "openrouter/loopback-primary" },
+		...(configuredFallback ? { "retry.fallbackChains": { judge: ["openrouter/loopback-backup"] } } : {}),
+	});
+	cfgJudgmentAttemptTimeoutMs.override(settings, 200);
+	const registry = makeRegistry(models, { openrouter: "loopback-key" });
+	return {
+		deps: { settings, registry, purpose: "test", sessionId: "loopback-session" },
+		attempted,
+		started: started.promise,
+		recover: () => {
+			healthy = true;
+		},
+		[Symbol.dispose]() {
+			pending.resolve(new Response("fixture stopped", { status: 503 }));
+			server.stop(true);
+		},
+	};
+}
+
+function hangNativeSetup(registry: ModelRegistry, stage: "credentials" | "headers") {
+	const started = Promise.withResolvers<void>();
+	const pending = Promise.withResolvers<undefined>();
+	const state: { signal?: AbortSignal } = {};
+	if (stage === "credentials") {
+		const getApiKey = registry.getApiKey.bind(registry);
+		vi.spyOn(registry, "getApiKey").mockImplementation((model, sessionId, options) => {
+			if (model.id !== "loopback-primary") return getApiKey(model, sessionId, options);
+			state.signal = options?.signal;
+			started.resolve();
+			return pending.promise;
+		});
+	} else {
+		const resolveHeaders = registry.resolveModelHeaders.bind(registry);
+		vi.spyOn(registry, "resolveModelHeaders").mockImplementation((model, signal) => {
+			if (model.id !== "loopback-primary") return resolveHeaders(model, signal);
+			state.signal = signal;
+			started.resolve();
+			return pending.promise;
+		});
+	}
+	return {
+		started: started.promise,
+		state,
+		[Symbol.dispose]() {
+			pending.resolve(undefined);
+		},
+	};
+}
+
 function reply(model: Model<Api>, text: string, stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
 	return {
 		role: "assistant",
@@ -141,6 +249,135 @@ afterEach(() => {
 });
 
 describe("ChainJudge", () => {
+	it.each([false, true])("tries the lead first and falls back on failure (%s)", async leadFails => {
+		const settings = Settings.isolated({ modelRoles: { judge: "typesafe/jev-preview" } });
+		const registry = makeRegistry([JEV_PREVIEW, OPENROUTER_JEV], { typesafe: "ts-key", openrouter: "or-key" });
+		const urls: string[] = [];
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			asGlobalFetch(async url => {
+				urls.push(String(url));
+				if (leadFails && String(url) === OPENROUTER_DECISIONS_URL) {
+					return new Response("rejected", { status: 400 });
+				}
+				return Response.json({
+					model: "jev-1.13.0",
+					answers: { level: { type: "choice", choice: "high" } },
+					usage: { input_tokens: 8, output_tokens: 2 },
+				});
+			}),
+		);
+		const onUsage = vi.fn();
+		const judge = new ChainJudge({
+			settings,
+			registry,
+			purpose: "test",
+			leadModel: "openrouter/~typesafe/jev-latest",
+			onUsage,
+		});
+
+		expect(judge.primaryModel()?.id).toBe(OPENROUTER_JEV.id);
+		const result = await judge.judge({ state: "redesign the scheduler", questions: { level: TIER_QUESTION } });
+
+		expect(result.answers.level.choice).toBe("high");
+		expect(urls).toEqual(
+			leadFails ? [OPENROUTER_DECISIONS_URL, "https://judge.example.test/v1/systemone"] : [OPENROUTER_DECISIONS_URL],
+		);
+		expect(onUsage).toHaveBeenCalledTimes(leadFails ? 2 : 1);
+		expect(onUsage).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({ model: OPENROUTER_JEV.id, stopReason: leadFails ? "error" : "stop" }),
+		);
+		if (leadFails) {
+			expect(onUsage).toHaveBeenNthCalledWith(
+				2,
+				expect.objectContaining({ model: JEV_PREVIEW.id, stopReason: "stop" }),
+			);
+		}
+	});
+
+	it("does not retry a lead that also appears in the role chain", async () => {
+		const settings = Settings.isolated({
+			modelRoles: { judge: "typesafe/jev-preview" },
+			"retry.fallbackChains": { judge: ["openrouter/~typesafe/jev-latest"] },
+		});
+		const registry = makeRegistry([JEV_PREVIEW, OPENROUTER_JEV], { typesafe: "ts-key", openrouter: "or-key" });
+		const urls: string[] = [];
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			asGlobalFetch(async url => {
+				urls.push(String(url));
+				return new Response("rejected", { status: 400 });
+			}),
+		);
+		const judge = new ChainJudge({
+			settings,
+			registry,
+			purpose: "test",
+			leadModel: "openrouter/~typesafe/jev-latest",
+		});
+
+		await expect(
+			judge.judge({ state: "redesign the scheduler", questions: { level: TIER_QUESTION } }),
+		).rejects.toThrow("every judge candidate failed");
+		expect(urls).toEqual([OPENROUTER_DECISIONS_URL, "https://judge.example.test/v1/systemone"]);
+	});
+
+	it("ignores a lead that matches no candidate", async () => {
+		const settings = Settings.isolated({ modelRoles: { judge: "typesafe/jev-preview" } });
+		const registry = makeRegistry([JEV_PREVIEW], { typesafe: "ts-key" });
+		const urls: string[] = [];
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			asGlobalFetch(async url => {
+				urls.push(String(url));
+				return Response.json({
+					model: "jev-1.13.0",
+					answers: { level: { type: "choice", choice: "high" } },
+					usage: { input_tokens: 8, output_tokens: 2 },
+				});
+			}),
+		);
+		const judge = new ChainJudge({ settings, registry, purpose: "test", leadModel: "nace/drex-max-v1.1" });
+		const result = await judge.judge({ state: "redesign the scheduler", questions: { level: TIER_QUESTION } });
+
+		expect(result.answers.level.choice).toBe("high");
+		expect(judge.primaryModel()?.id).toBe(JEV_PREVIEW.id);
+		expect(urls).toEqual(["https://judge.example.test/v1/systemone"]);
+	});
+
+	it("never degrades a native lead to a prompted model, and keeps the native gate on the judge role", async () => {
+		const settings = Settings.isolated({
+			modelRoles: { judge: `${LOCAL.provider}/${LOCAL.id}` },
+			"retry.fallbackChains": { judge: [`${ONLINE.provider}/${ONLINE.id}`] },
+		});
+		const registry = makeRegistry([LOCAL, ONLINE, OPENROUTER_JEV], {
+			openrouter: "or-key",
+			[ONLINE.provider]: "online-key",
+		});
+		const urls: string[] = [];
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			asGlobalFetch(async url => {
+				urls.push(String(url));
+				return new Response("rejected", { status: 400 });
+			}),
+		);
+		const local = vi.spyOn(tinyModelClient, "complete").mockRejectedValue(new Error("prompted judge must not run"));
+		const online = vi.spyOn(ai, "completeSimple").mockRejectedValue(new Error("prompted judge must not run"));
+		const judge = new ChainJudge({
+			settings,
+			registry,
+			purpose: "test",
+			leadModel: "openrouter/~typesafe/jev-latest",
+			sessionModel: ONLINE_BACKUP,
+		});
+
+		await expect(
+			judge.judge({ state: "redesign the scheduler", questions: { level: TIER_QUESTION } }),
+		).rejects.toThrow("400");
+		expect(urls).toEqual([OPENROUTER_DECISIONS_URL]);
+		expect(local).not.toHaveBeenCalled();
+		expect(online).not.toHaveBeenCalled();
+		expect(hasNativeJudge(settings, registry)).toBe(false);
+	});
+
 	it("falls from a coarse local question to a tiered online question", async () => {
 		const settings = Settings.isolated({
 			modelRoles: { judge: `${LOCAL.provider}/${LOCAL.id}` },
@@ -327,6 +564,40 @@ describe("ChainJudge", () => {
 		);
 	});
 
+	it("skips a candidate whose model was not found on later calls and goes straight to the fallback", async () => {
+		const settings = Settings.isolated({
+			modelRoles: { judge: "typesafe/jev-preview" },
+			"retry.fallbackChains": { judge: [`${OPENROUTER_JEV.provider}/${OPENROUTER_JEV.id}`] },
+		});
+		const registry = makeRegistry([JEV_PREVIEW, OPENROUTER_JEV], { typesafe: "ts-key", openrouter: "or-key" });
+		const urls: string[] = [];
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			asGlobalFetch(async url => {
+				urls.push(String(url));
+				if (String(url).endsWith("/v1/systemone")) {
+					return Response.json({ error: { message: "This model is unavailable", code: 404 } }, { status: 404 });
+				}
+				return Response.json({
+					model: "jev-1.13.0",
+					answers: { level: { type: "choice", choice: "high" } },
+					usage: { input_tokens: 8, output_tokens: 2 },
+				});
+			}),
+		);
+		const request = { state: "rename a local", questions: { level: TIER_QUESTION } };
+
+		for (let call = 0; call < 2; call++) {
+			const result = await new ChainJudge({ settings, registry, purpose: "test" }).judge(request);
+			expect(result.answers.level.choice).toBe("high");
+		}
+
+		expect(urls).toEqual([
+			"https://judge.example.test/v1/systemone",
+			OPENROUTER_DECISIONS_URL,
+			OPENROUTER_DECISIONS_URL,
+		]);
+	});
+
 	it("skips text-only chat and local candidates for image judgments", async () => {
 		const settings = Settings.isolated({
 			modelRoles: { judge: `${TEXT_ONLY.provider}/${TEXT_ONLY.id}` },
@@ -439,6 +710,52 @@ describe("ChainJudge", () => {
 		const [, part] = state as [string, { image_url: { url: string } }];
 		const sent = await new Bun.Image(Buffer.from(part.image_url.url.split(",")[1], "base64")).metadata();
 		expect([sent.width, sent.height]).toEqual([280, 280]);
+	});
+
+	it("splits a request-wide patch cap across images that each fit it alone", async () => {
+		const liquid = {
+			...JEV_PREVIEW,
+			id: "d1.1",
+			api: "liquid-systemone",
+			provider: "liquid",
+			baseUrl: "https://api.liquid.ai",
+			input: ["text", "image"],
+		} as Model<Api>;
+		const settings = Settings.isolated({ modelRoles: { judge: `${liquid.provider}/${liquid.id}` } });
+		const registry = makeRegistry([liquid], { liquid: "liquid_key" });
+		let images: string[] = [];
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			asGlobalFetch(async (_url, init) => {
+				images = JSON.parse(String(init?.body)).images;
+				return Response.json({
+					model: liquid.id,
+					answers: { visible: { type: "noul", noul: 0.75 } },
+					usage: { input_tokens: 8, output_tokens: 0 },
+				});
+			}),
+		);
+		// 2304x2304 covers 72x72 = 5184 patches: within Liquid's 10,000 alone, over it as a pair.
+		const side = 2304;
+		const large: ImageContent = {
+			type: "image",
+			data: encodeRawPng(new Uint8Array(side * side * 3), side, side, 3).toBase64(),
+			mimeType: "image/png",
+		};
+
+		const result = await new ChainJudge({ settings, registry, purpose: "test" }).judge({
+			state: "compare these",
+			questions: { visible: { type: "noul", instructions: "Is an object visible?" } },
+			images: [large, large],
+		});
+
+		expect(result.answers.visible.noul).toBe(0.75);
+		let patches = 0;
+		for (const url of images) {
+			const { width, height } = await new Bun.Image(Buffer.from(url.split(",")[1], "base64")).metadata();
+			patches += Math.ceil(width / 32) * Math.ceil(height / 32);
+		}
+		expect(images).toHaveLength(2);
+		expect(patches).toBeLessThanOrEqual(10_000);
 	});
 
 	it("measures box answers on the source image its question names, not the padded fit sent", async () => {
@@ -790,6 +1107,125 @@ describe("ChainJudge", () => {
 
 		expect(native).not.toHaveBeenCalled();
 		expect(chat).not.toHaveBeenCalled();
+	});
+
+	it("fails over within the native attempt bound and skips the timed-out route until its cooldown expires", async () => {
+		using fixture = nativeLoopback();
+		const request = { state: "locate the scheduler", questions: { level: TIER_QUESTION } };
+		const result = await new ChainJudge(fixture.deps).judge(request, { signal: AbortSignal.timeout(4_500) });
+		expect(result.model).toBe("loopback-backup");
+		expect(fixture.attempted).toEqual(["loopback-primary", "loopback-backup"]);
+
+		fixture.recover();
+		await new ChainJudge(fixture.deps).judge(request);
+		expect(fixture.attempted.at(-1)).toBe("loopback-backup");
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 30_001);
+		const recovered = await new ChainJudge(fixture.deps).judge(request);
+		expect(recovered.model).toBe("loopback-primary");
+	});
+
+	it("never cuts off a slow native judge for an implicit candidate when no fallback is configured", async () => {
+		using fixture = nativeLoopback({ configuredFallback: false, delayPrimaryMs: 400 });
+		fixture.recover();
+		const result = await new ChainJudge(fixture.deps).judge({
+			state: "locate the scheduler",
+			questions: { level: TIER_QUESTION },
+		});
+		expect(result.model).toBe("loopback-primary");
+		expect(fixture.attempted).toEqual(["loopback-primary"]);
+	});
+
+	it("bounds native response bodies that stop arriving after the headers", async () => {
+		using fixture = nativeLoopback({ hangBody: true });
+		const result = await new ChainJudge(fixture.deps).judge(
+			{ state: "locate the scheduler", questions: { level: TIER_QUESTION } },
+			{ signal: AbortSignal.timeout(4_500) },
+		);
+		expect(result.answers.level.choice).toBe("high");
+		expect(fixture.attempted).toEqual(["loopback-primary", "loopback-backup"]);
+	}, 7_000);
+
+	it("bounds native attempts through withCandidate even when the callback omits options", async () => {
+		using fixture = nativeLoopback();
+		const result = await new ChainJudge(fixture.deps).withCandidate(candidate =>
+			candidate.judge({ state: "locate the scheduler", questions: { level: TIER_QUESTION } }),
+		);
+		expect(result.model).toBe("loopback-backup");
+		expect(fixture.attempted).toEqual(["loopback-primary", "loopback-backup"]);
+	}, 7_000);
+
+	it("propagates caller cancellation of a hung native attempt without failover or a cooldown", async () => {
+		using fixture = nativeLoopback();
+		const controller = new AbortController();
+		const request = { state: "locate the scheduler", questions: { level: TIER_QUESTION } };
+		const pending = new ChainJudge(fixture.deps).withCandidate(candidate => candidate.judge(request), {
+			signal: controller.signal,
+		});
+		await fixture.started;
+		const reason = new Error("caller stopped");
+		controller.abort(reason);
+		await expect(pending).rejects.toBe(reason);
+		expect(fixture.attempted).toEqual(["loopback-primary"]);
+		fixture.recover();
+		const recovered = await new ChainJudge(fixture.deps).judge(request);
+		expect(recovered.model).toBe("loopback-primary");
+		expect(fixture.attempted).toEqual(["loopback-primary", "loopback-primary"]);
+	});
+
+	it.each(["credentials", "headers"] as const)(
+		"fails over when native %s resolution hangs and cancels that attempt",
+		async stage => {
+			using fixture = nativeLoopback();
+			using setup = hangNativeSetup(fixture.deps.registry, stage);
+			const result = await new ChainJudge(fixture.deps).judge(
+				{ state: "locate the scheduler", questions: { level: TIER_QUESTION } },
+				{ signal: AbortSignal.timeout(4_500) },
+			);
+			expect(result.model).toBe("loopback-backup");
+			expect(setup.state.signal?.aborted).toBe(true);
+			expect(fixture.attempted).toEqual(["loopback-backup"]);
+		},
+		7_000,
+	);
+
+	it("does not charge local image preparation to a native candidate's deadline", async () => {
+		using fixture = nativeLoopback();
+		fixture.recover();
+		vi.spyOn(ai, "judgmentImagesWithin").mockReturnValue(false);
+		vi.spyOn(imageResize, "fitImage").mockImplementation(async image => {
+			// AbortSignal.timeout uses the platform clock; image work must outlast that real deadline.
+			await Bun.sleep(400);
+			return { image, content: { top: 0, left: 0, bottom: 1, right: 1 } };
+		});
+		const result = await new ChainJudge(fixture.deps).judge({
+			state: "locate the scheduler",
+			questions: { level: TIER_QUESTION },
+			images: [IMAGE_ONE],
+		});
+		expect(result.model).toBe("loopback-primary");
+		expect(fixture.attempted).toEqual(["loopback-primary"]);
+	}, 7_000);
+
+	it("cancels local image preparation without starting a native request", async () => {
+		using fixture = nativeLoopback();
+		const started = Promise.withResolvers<void>();
+		const fitted = Promise.withResolvers<imageResize.FittedImage>();
+		vi.spyOn(ai, "judgmentImagesWithin").mockReturnValue(false);
+		vi.spyOn(imageResize, "fitImage").mockImplementation(() => {
+			started.resolve();
+			return fitted.promise;
+		});
+		const controller = new AbortController();
+		const pending = new ChainJudge(fixture.deps).judge(
+			{ state: "locate the scheduler", questions: { level: TIER_QUESTION }, images: [IMAGE_ONE] },
+			{ signal: controller.signal },
+		);
+		await started.promise;
+		const reason = new Error("caller stopped");
+		controller.abort(reason);
+		await expect(pending).rejects.toBe(reason);
+		fitted.resolve({ image: IMAGE_ONE, content: { top: 0, left: 0, bottom: 1, right: 1 } });
+		expect(fixture.attempted).toEqual([]);
 	});
 
 	it("propagates caller abort without attempting a fallback", async () => {
@@ -1147,5 +1583,111 @@ describe("ChainJudge", () => {
 			["judgment", { usd: 0.01, inputUsd: 0.01, outputUsd: 0 }],
 			["judgment", { usd: 0.01, inputUsd: 0.01, outputUsd: 0 }],
 		]);
+	});
+});
+
+describe("JudgmentCache size cap", () => {
+	const MODEL = "typesafe/jev-preview";
+	const question: NoulQuestion = { type: "noul", instructions: "Is it fine?" };
+	const request = (i: number): JudgmentRequest => ({
+		state: { i, body: "x".repeat(2000) },
+		questions: { q: question },
+	});
+	const result = (noul: number): JudgmentResult =>
+		({
+			api: "typesafe",
+			provider: "typesafe",
+			model: "jev-1.13.0",
+			answers: { q: { type: "noul", noul } },
+			usage: { input: 10, output: 0, cost: { total: 0.01 } },
+		}) as unknown as JudgmentResult;
+	const fill = (cache: JudgmentCache, from: number, to: number) => {
+		for (let i = from; i < to; i++)
+			cache.record(MODEL, cache.lookup(MODEL, request(i)), request(i).questions, result(i / to));
+	};
+	const hits = (cache: JudgmentCache, i: number) => cache.lookup(MODEL, request(i)).answers.q !== undefined;
+
+	it("prunes the oldest states under the cap and keeps recent judgments answering", async () => {
+		using tempDir = TempDir.createSync("@omp-judgment-cache-cap-");
+		const dbPath = path.join(tempDir.path(), "judgment-cache.db");
+		const cap = 512 * 1024;
+		const cache = JudgmentCache.open(dbPath, cap);
+		fill(cache, 0, 600);
+		await cache.prune();
+
+		expect(cache.usedBytes()).toBeLessThanOrEqual(cap);
+		// Oldest-first: what survives is exactly the newest run of states, never empty.
+		const kept = Array.from({ length: 600 }, (_, i) => hits(cache, i));
+		const firstKept = kept.indexOf(true);
+		expect(firstKept).toBeGreaterThan(0);
+		expect(kept.slice(firstKept).every(Boolean)).toBeTrue();
+		expect(600 - firstKept).toBeGreaterThan(50);
+		// Writes and reads keep working after a prune.
+		fill(cache, 600, 601);
+		expect(cache.lookup(MODEL, request(600)).answers.q).toEqual({ type: "noul", noul: 600 / 601 });
+		cache.close();
+
+		using db = new Database(dbPath, { readonly: true });
+		expect(db.query<{ auto_vacuum: number }, []>("PRAGMA auto_vacuum").get()?.auto_vacuum).toBe(2);
+		// No orphans: every oracle and usage row still has its state.
+		expect(
+			db
+				.query<{ n: number }, []>(
+					"SELECT (SELECT count(*) FROM oracle WHERE state NOT IN (SELECT id FROM states)) + (SELECT count(*) FROM usage WHERE state NOT IN (SELECT id FROM states)) AS n",
+				)
+				.get()?.n,
+		).toBe(0);
+		expect(Bun.file(dbPath).size).toBeLessThanOrEqual(cap);
+	});
+
+	it("prunes automatically while recording", async () => {
+		using tempDir = TempDir.createSync("@omp-judgment-cache-cap-auto-");
+		const dbPath = path.join(tempDir.path(), "judgment-cache.db");
+		const cap = 256 * 1024;
+		const cache = JudgmentCache.open(dbPath, cap);
+		fill(cache, 0, 1200);
+		// Let the prunes the records started finish.
+		await cache.prune();
+		expect(cache.usedBytes()).toBeLessThanOrEqual(cap);
+		expect(hits(cache, 1199)).toBeTrue();
+		cache.close();
+	});
+
+	it("leaves a store under its cap untouched", async () => {
+		using tempDir = TempDir.createSync("@omp-judgment-cache-cap-under-");
+		const cache = JudgmentCache.open(path.join(tempDir.path(), "judgment-cache.db"), 64 * 1024 * 1024);
+		fill(cache, 0, 50);
+		expect(await cache.prune()).toBeUndefined();
+		for (let i = 0; i < 50; i++) expect(hits(cache, i)).toBeTrue();
+		cache.close();
+	});
+
+	it("rebuilds a store created without auto-vacuum once, returning its space to the filesystem", async () => {
+		using tempDir = TempDir.createSync("@omp-judgment-cache-cap-legacy-");
+		const dbPath = path.join(tempDir.path(), "judgment-cache.db");
+		// Grow the store under a generous cap, then force it to the pre-cap layout.
+		const unbounded = JudgmentCache.open(dbPath, 1024 ** 3);
+		fill(unbounded, 0, 600);
+		unbounded.close();
+		{
+			using db = new Database(dbPath);
+			db.run("PRAGMA auto_vacuum=NONE");
+			db.run("VACUUM");
+			expect(db.query<{ auto_vacuum: number }, []>("PRAGMA auto_vacuum").get()?.auto_vacuum).toBe(0);
+		}
+		const before = Bun.file(dbPath).size;
+		const cap = 512 * 1024;
+		expect(before).toBeGreaterThan(cap);
+
+		const cache = JudgmentCache.open(dbPath, cap);
+		const pruned = await cache.prune();
+		expect(pruned?.vacuumed).toBeTrue();
+		expect(pruned?.usedBytesAfter).toBeLessThanOrEqual(cap);
+		expect(hits(cache, 599)).toBeTrue();
+		cache.close();
+
+		expect(Bun.file(dbPath).size).toBeLessThanOrEqual(cap);
+		using db = new Database(dbPath, { readonly: true });
+		expect(db.query<{ auto_vacuum: number }, []>("PRAGMA auto_vacuum").get()?.auto_vacuum).toBe(2);
 	});
 });

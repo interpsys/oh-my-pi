@@ -377,6 +377,20 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 	if (data instanceof type.errors) {
 		throw new AIError.ValidationError(`anthropic-messages: ${data.summary}`);
 	}
+	// Structured output has no pi-ai option to land on. Accepting it would
+	// return unconstrained text as a 200; reject so clients fall back to a
+	// prompt-side schema (#18842).
+	const formatField =
+		data.output_config?.format != null
+			? "output_config.format"
+			: data.output_format != null
+				? "output_format"
+				: undefined;
+	if (formatField) {
+		throw new AIError.ValidationError(
+			`anthropic-messages: ${formatField} (structured output) is unsupported by this auth-gateway route; put the schema in the prompt or force a tool call instead`,
+		);
+	}
 
 	const now = Date.now();
 	const messages: Message[] = [];
@@ -455,12 +469,12 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 	}
 	const cacheKey = resolvePromptCacheKey(body, headers);
 	if (cacheKey !== undefined) options.promptCacheKey = cacheKey;
-	// Allow-listed header capture. The gateway's `handleFormatEndpoint`
-	// already merges its own pre-capture under whatever the parser sets, but
-	// we populate here too so direct callers of `parseRequest` (tests, custom
-	// wrappers) see the same surface. `anthropic-version` is the most
-	// load-bearing — some downstream Anthropic-API targets reject requests
-	// missing it.
+	// Allow-listed header capture, read back by `encodeStream` (the caller's
+	// `anthropic-beta`) and by direct callers of `parseRequest` (tests, custom
+	// wrappers). The gateway decides which captured values reach the provider
+	// (`applyCallerTrust`): the gateway token's do, a scoped client's do not.
+	// `anthropic-version` is the most load-bearing — some downstream
+	// Anthropic-API targets reject requests missing it.
 	if (headers) {
 		const captured = captureRequestHeaders(headers);
 		if (Object.keys(captured).length > 0) options.headers = captured;
@@ -662,6 +676,7 @@ type BlockKind = "text" | "thinking" | "tool_use";
 interface OpenBlock {
 	index: number;
 	kind: BlockKind;
+	argumentsEmitted?: boolean;
 }
 
 // Keepalive cadence for the SSE encoder. Anthropic's API pings periodically;
@@ -912,7 +927,7 @@ export function encodeStream(
 								break;
 							}
 							const index = wireIndex(ev.contentIndex);
-							open.set(ev.contentIndex, { index, kind: "tool_use" });
+							open.set(ev.contentIndex, { index, kind: "tool_use", argumentsEmitted: false });
 							controller.enqueue(
 								sseFrame("content_block_start", {
 									type: "content_block_start",
@@ -927,8 +942,10 @@ export function encodeStream(
 							);
 							break;
 						}
-						case "toolcall_delta":
+						case "toolcall_delta": {
 							if (suppressed.has(ev.contentIndex)) break;
+							const block = open.get(ev.contentIndex);
+							if (block?.kind === "tool_use" && ev.delta.length > 0) block.argumentsEmitted = true;
 							controller.enqueue(
 								sseFrame("content_block_delta", {
 									type: "content_block_delta",
@@ -937,9 +954,23 @@ export function encodeStream(
 								}),
 							);
 							break;
-						case "toolcall_end":
+						}
+						case "toolcall_end": {
+							const block = open.get(ev.contentIndex);
+							if (block?.kind === "tool_use" && !block.argumentsEmitted && isClientToolUse(ev.toolCall)) {
+								// Some streams deliver arguments only on the completed call.
+								// Finalize those inputs without duplicating streamed JSON.
+								controller.enqueue(
+									sseFrame("content_block_delta", {
+										type: "content_block_delta",
+										index: block.index,
+										delta: { type: "input_json_delta", partial_json: JSON.stringify(ev.toolCall.arguments) },
+									}),
+								);
+							}
 							closeBlock(ev.contentIndex);
 							break;
+						}
 						case "done": {
 							for (const idx of Array.from(open.keys())) closeBlock(idx);
 							emitServerToolBlocksBefore(ev.message, ev.message.content.length);

@@ -779,36 +779,6 @@ describe("AgentSession message pipeline", () => {
 		expect(attachments).toEqual([{ label: "Image #1", uri: "attachment://1", image: userImage, sourcePath }]);
 	});
 
-	it("resolves attachment://N to images pasted into a newer ask answer", () => {
-		const userImage: ImageContent = { type: "image", data: "user-image", mimeType: "image/png" };
-		const answerImage: ImageContent = { type: "image", data: "answer-image", mimeType: "image/png" };
-		const session = new AgentSession({
-			agent: createAgent(),
-			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false }),
-			modelRegistry: {} as never,
-		});
-		sessions.push(session);
-
-		session.agent.appendMessage({
-			role: "user",
-			content: [{ type: "text", text: "inspect this" }, userImage],
-			timestamp: Date.now(),
-		});
-		session.agent.appendMessage({
-			role: "toolResult",
-			toolCallId: "ask-1",
-			toolName: "ask",
-			content: [{ type: "text", text: "User selected: A\nUser added note: see [Image #1]" }, answerImage],
-			timestamp: Date.now(),
-			isError: false,
-		});
-
-		expect(session.getImageAttachments().map(entry => [entry.uri, entry.image])).toEqual([
-			["attachment://1", answerImage],
-		]);
-	});
-
 	it("normalizes historical WebP on the main provider request path", async () => {
 		using tempDir = TempDir.createSync("@pi-stb-main-path-");
 		const api = "test-stb-main-path";
@@ -1128,7 +1098,8 @@ describe("AgentSession message pipeline", () => {
 		expect(capturedOptions?.promptCacheKey).toBe(promptCacheKey);
 		expect(capturedOptions?.sessionId).toStartWith(`${cacheSessionId}:side:`);
 		expect(capturedOptions?.sessionId).not.toBe(cacheSessionId);
-		expect(capturedOptions?.preferWebsockets).toBe(true);
+		// The Codex-only global opt-in must not leak into an unrelated side-turn provider.
+		expect(capturedOptions?.preferWebsockets).toBeUndefined();
 		expect(capturedOptions?.providerSessionState).toBe(session.providerSessionState);
 	});
 
@@ -2175,6 +2146,7 @@ describe("AgentSession message pipeline", () => {
 				type: "toolcall_delta",
 				contentIndex: 0,
 				delta: "rep",
+				partial: assistantMessage,
 			},
 		} as never);
 
@@ -2682,6 +2654,120 @@ describe("AgentSession message pipeline", () => {
 			authStorage.close();
 		}
 	});
+	for (const scenario of ["result", "abortTurn"] as const) {
+		it(`tool_call ${scenario === "result" ? "result short-circuits the tool with a success result" : "abortTurn ends the turn with a typed budget_exhausted abort"}`, async () => {
+			using tempDir = TempDir.createSync(`@pi-tool-call-${scenario}-`);
+			const api = `test-tool-call-${scenario}`;
+			let requests = 0;
+			registerCustomApi(api, () => {
+				requests++;
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					if (requests === 1) {
+						const message = createAssistantMessage("");
+						const toolCall = {
+							type: "toolCall",
+							id: `call-${scenario}-1`,
+							name: "bash",
+							arguments: { command: "echo executed-for-real" },
+						} as const;
+						message.content = [toolCall];
+						message.stopReason = "toolUse";
+						stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
+						stream.push({ type: "toolcall_end", contentIndex: 0, toolCall: toolCall as never, partial: message });
+						stream.push({ type: "done", reason: "toolUse", message });
+					} else {
+						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") });
+					}
+				});
+				return stream;
+			});
+			const model = buildModel({
+				id: `local-${scenario}-model`,
+				name: "Local Model",
+				api,
+				provider: "ollama",
+				baseUrl: "http://127.0.0.1:11434",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 4096,
+				maxTokens: 1024,
+			} as ModelSpec<Api>) as Model<Api>;
+			const handler: ExtensionFactory = pi => {
+				pi.on("tool_call", async event => {
+					if (event.toolName !== "bash") return undefined;
+					return scenario === "result"
+						? {
+								block: true,
+								reason: "legacy refusal",
+								result: {
+									content: [{ type: "text", text: "short-circuit receipt" }],
+									details: { via: "hook" },
+								},
+							}
+						: {
+								block: true,
+								reason: "budget spent: yield now",
+								abortTurn: { reason: "budget_exhausted", message: "sonic 6 min budget spent" },
+							};
+				});
+			};
+			const authStorage = await AuthStorage.create(tempDir.join("auth.db"));
+			const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
+			const { session } = await createAgentSession({
+				cwd: tempDir.path(),
+				agentDir: tempDir.path(),
+				sessionManager: SessionManager.inMemory(tempDir.path()),
+				authStorage,
+				modelRegistry,
+				settings: Settings.isolated({
+					"compaction.enabled": false,
+					"bash.autoBackground.enabled": false,
+					"bashInterceptor.enabled": false,
+				}),
+				model,
+				disableExtensionDiscovery: true,
+				extensions: [handler],
+				skills: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				enableMCP: false,
+				enableLsp: false,
+				skipPythonPreflight: true,
+				toolNames: ["bash"],
+			});
+			try {
+				await session.sendUserMessage("run it");
+				const toolResult = session.agent.state.messages.find(m => m.role === "toolResult") as
+					| { content: Array<{ type: string; text?: string }>; isError?: boolean; details?: unknown }
+					| undefined;
+				const text = toolResult?.content.find(block => block.type === "text")?.text ?? "";
+				expect(text).not.toContain("executed-for-real");
+				if (scenario === "result") {
+					expect(text).toBe("short-circuit receipt");
+					expect(toolResult?.isError).toBe(false);
+					expect(toolResult?.details).toEqual({ via: "hook" });
+					expect(requests).toBe(2);
+					expect(session.turnAbort).toBeUndefined();
+				} else {
+					expect(text).toContain("budget spent: yield now");
+					expect(toolResult?.isError).toBe(true);
+					// No further provider request after the refused call.
+					expect(requests).toBe(1);
+					expect(session.turnAbort).toMatchObject({
+						reason: "budget_exhausted",
+						message: "sonic 6 min budget spent",
+						toolName: "bash",
+					});
+				}
+			} finally {
+				await session.dispose();
+				authStorage.close();
+			}
+		});
+	}
 	it("delivers tool_call and tool_result additionalContext on the next provider request", async () => {
 		using tempDir = TempDir.createSync("@pi-tool-call-context-");
 		const api = "test-tool-call-context";

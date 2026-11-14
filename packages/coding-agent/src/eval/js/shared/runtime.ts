@@ -65,6 +65,20 @@ function surfaceBridgedToolImages(value: unknown, hooks: RuntimeHooks): unknown 
 	return { ...rest, images: `(${displayed} image${displayed === 1 ? "" : "s"} displayed)` };
 }
 
+/** MCP envelopes (`details` has `serverName` + `mcpToolName`) become their payload: structuredContent, else JSON text, else text; an error result throws. */
+function unwrapMcpResult(value: unknown): unknown {
+	if (!isRecord(value) || !isRecord(value.details) || typeof value.text !== "string") return value;
+	const { details, text } = value;
+	if (typeof details.serverName !== "string" || typeof details.mcpToolName !== "string") return value;
+	if (value.hasError) throw new Error(text);
+	if (details.structuredContent !== undefined) return details.structuredContent;
+	try {
+		return JSON.parse(text);
+	} catch {
+		return text;
+	}
+}
+
 export interface RunContext {
 	runId: string;
 	hooks: RuntimeHooks;
@@ -126,6 +140,7 @@ const PRELUDE_GLOBAL_KEYS = [
 	"read",
 	"write",
 	"env",
+	"sh",
 ];
 
 /**
@@ -568,11 +583,22 @@ export class JsRuntime {
 						const finalValue = context.finalExpressionValue;
 						context.finalExpressionSet = false;
 						context.finalExpressionValue = undefined;
-						return await awaitMaybePromise(finalValue);
+						const settled = await awaitMaybePromise(finalValue);
+						return wrapped.finalExpressionSuppressed ? undefined : settled;
 					}
 					return awaited;
 				}
-				return await awaitMaybePromise(value);
+				// Classification is best-effort; keep the engine's completion for valid syntax
+				// the parser does not understand rather than silently dropping its result.
+				if (wrapped.finalExpressionReturned === null) return await awaitMaybePromise(value);
+				// The async wrapper's value is an explicit top-level `return`. A plain script's completion
+				// value is whatever statement ran last (an `if` body, the expression before a trailing
+				// `const`); as in Python, that is not the cell's result.
+				if (wrapped.asyncWrapped) return await awaitMaybePromise(value);
+				// Discard the displayed value, not its failure: assigned promises must still
+				// settle inside this run instead of rejecting unhandled in a persistent worker.
+				await awaitMaybePromise(value);
+				return undefined;
 			});
 		} finally {
 			this.#recordGlobals();
@@ -653,7 +679,9 @@ export class JsRuntime {
 			__omp_call_tool__: async (name: string, args: unknown) => {
 				const hooks = this.#activeHooks("tool");
 				if (!hooks) return undefined;
-				return surfaceBridgedToolImages(await hooks.callTool(name, args, this.#callSiteAls.getStore()), hooks);
+				return unwrapMcpResult(
+					surfaceBridgedToolImages(await hooks.callTool(name, args, this.#callSiteAls.getStore()), hooks),
+				);
 			},
 			__omp_prelude__: async (name: string, parameters: unknown) => {
 				const hooks = this.#activeHooks("prelude");

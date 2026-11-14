@@ -63,7 +63,7 @@ export interface KittyGraphicsFeatures {
  * Whether the detected terminal renders Kitty Unicode placeholders (`U=1` +
  * U+10EEEE with row/column diacritics).
  *
- * Kitty, Ghostty and Otty advertise placeholder support directly. A multiplexer
+ * Kitty, Ghostty, Otty, Tern and Rex support placeholder placement directly. A multiplexer
  * cannot use cursor-positioned placements because the outer terminal does not
  * know pane scroll/reflow state. An explicit `PI_FORCE_IMAGE_PROTOCOL=kitty`
  * opts into placeholders under any multiplexer — matching `timg -pk`.
@@ -87,7 +87,9 @@ export function detectKittyUnicodePlaceholdersSupport(terminalId: string, env: N
 		terminalId === "ghostty" ||
 		terminalId === "monstar" ||
 		terminalId === "otty" ||
-		terminalId === "rio"
+		terminalId === "rio" ||
+		terminalId === "tern" ||
+		terminalId === "rex"
 	);
 }
 

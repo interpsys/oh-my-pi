@@ -66,9 +66,46 @@ describe("MCP bridge structuredContent", () => {
 		expect(occurrences).toBe(1);
 	});
 
-	it("leaves results without structuredContent untouched", async () => {
-		const text = await modelText({ content: [{ type: "text", text: "plain result" }] });
-		expect(text).toBe("plain result");
+	it("does not repeat SDK-wrapped list and string results already in content", async () => {
+		const marker = "PROBE-MARKER-7f3d-9a2c";
+		const items = [
+			{ marker, item: 1 },
+			{ marker, item: 2 },
+		];
+		const list = await build({
+			content: items.map(item => ({ type: "text", text: JSON.stringify(item) })),
+			structuredContent: { result: items },
+		});
+		const listText = list.content.map(block => (block.type === "text" ? block.text : "")).join("\n");
+		expect(listText.split(marker)).toHaveLength(3);
+		expect(list.details?.structuredContent).toEqual({ result: items });
+
+		const string = await modelText({
+			content: [{ type: "text", text: marker }],
+			structuredContent: { result: marker },
+		});
+		expect(string.split(marker)).toHaveLength(2);
+
+		const scalar = await modelText({
+			content: [{ type: "text", text: JSON.stringify(marker) }],
+			structuredContent: { result: marker },
+		});
+		expect(scalar.split(marker)).toHaveLength(2);
+	});
+
+	it("renders wrapped results when content carries distinct data or a partial payload", async () => {
+		const distinct = await modelText({
+			content: [{ type: "text", text: "issues listed" }],
+			structuredContent: { result: ["first", "second"] },
+		});
+		expect(distinct).toContain("issues listed");
+		expect(distinct).toContain("first");
+
+		const partial = await modelText({
+			content: [{ type: "text", text: '{"item":1}' }],
+			structuredContent: { result: [{ item: 1 }, { item: 2 }] },
+		});
+		expect(partial).toContain('"item": 2');
 	});
 
 	it("lets an eval consumer advance pages using opaque cursors rather than display text", async () => {
@@ -99,85 +136,40 @@ describe("MCP bridge structuredContent", () => {
 		} while (next !== null);
 		expect(items).toEqual(["first", "second"]);
 	});
-	it("keeps oversized structured data available to eval without duplicating it in the session JSONL", async () => {
+	it("drops spilled MCP payloads from direct results and never spills eval-bridged calls", async () => {
 		using temp = TempDir.createSync("@mcp-structured-spill-");
 		const manager = SessionManager.create(temp.path(), temp.path());
 		await manager.ensureOnDisk();
-		const cursor = "next:λ/```json";
+		const body = JSON.stringify({ rows: "é🦊x".repeat(30_000) });
 		const structuredContent = {
-			pages: [{ cursor, rows: [{ label: "東京", body: "é🦊".repeat(180_000) }] }],
-			next_cursor: cursor,
+			pages: [{ cursor: "next:λ/```json", rows: [{ label: "東京", body: "é🦊".repeat(30_000) }] }],
 		};
-		const renderedPayload = JSON.stringify(structuredContent, null, 2);
-		expect(Buffer.byteLength(renderedPayload, "utf8")).toBeGreaterThan(524 * 1024);
+		expect(Buffer.byteLength(body)).toBeGreaterThan(100 * 1024);
 		const tool = wrapToolWithMetaNotice(
 			CustomToolAdapter.wrap(
-				toolFor({
-					content: [{ type: "text", text: "page returned" }],
-					structuredContent,
-					isError: true,
-				}),
+				toolFor({ content: [{ type: "text", text: body }], structuredContent }),
 				() => ({}) as CustomToolContext,
 			),
 		);
-		const context = {
-			sessionManager: manager,
-			settings: Settings.isolated({
-				"tools.artifactSpillThreshold": 512,
-				"tools.artifactTailBytes": 1,
-				"tools.artifactTailLines": 10,
-			}),
-		} as unknown as AgentToolContext;
+		const context = { sessionManager: manager, settings: Settings.isolated({}) } as unknown as AgentToolContext;
 		try {
-			const result = await tool.execute("large-page", {}, undefined, undefined, context);
-			const details = result.details as MCPToolDetails;
-			const artifactId = details.meta?.truncation?.artifactId;
+			const direct = (await tool.execute("direct", {}, undefined, undefined, context)).details as MCPToolDetails;
+			const artifactId = direct.meta?.truncation?.artifactId;
 			if (!artifactId) throw new Error("Expected the MCP display to spill");
-			expect(details.structuredContent).toEqual(structuredContent);
-			expect(details.serverName).toBe("rhizome-mcp");
-			expect(details.mcpToolName).toBe("list_issues");
-			expect(details.isError).toBe(true);
-			const value = bridgeValueFromToolResult(tool.name, {}, result);
-			if (typeof value !== "object" || !("details" in value)) throw new Error("Expected eval details");
-			expect((value.details as MCPToolDetails).structuredContent).toEqual(structuredContent);
-			expect(value.hasError).toBe(true);
-			expect(value.text).not.toContain(structuredContent.pages[0]!.rows[0]!.body);
-			expect(value.text).toContain(`artifact://${artifactId}`);
+			expect(direct.rawContent).toBeUndefined();
+			expect(direct.structuredContent).toBeUndefined();
+			const artifact = await Bun.file((await manager.getArtifactPath(artifactId))!).text();
+			expect(artifact).toContain(body);
+			expect(artifact).toContain(JSON.stringify(structuredContent, null, 2));
 
-			const message = {
-				role: "toolResult" as const,
-				toolCallId: "large-page",
-				toolName: tool.name,
-				content: result.content,
-				details: result.details,
-				isError: true,
-				timestamp: Date.now(),
-			};
-			manager.appendMessage(message);
-			await manager.flush();
-			const sessionFile = manager.getSessionFile();
-			if (!sessionFile) throw new Error("Expected session JSONL");
-			const entries = (await Bun.file(sessionFile).text())
-				.trim()
-				.split("\n")
-				.map(line => JSON.parse(line));
-			const persisted = entries.find(entry => entry.message?.toolCallId === "large-page")?.message;
-			if (!persisted) throw new Error("Expected persisted MCP result");
-			expect(persisted.details).not.toHaveProperty("structuredContent");
-			expect(persisted.details).toMatchObject({
-				serverName: "rhizome-mcp",
-				mcpToolName: "list_issues",
-				isError: true,
-				meta: { truncation: { artifactId } },
-			});
-			expect(persisted.isError).toBe(true);
-			expect(persisted.toolName).toBe(tool.name);
-			expect(persisted.content).toEqual(result.content);
-			expect(JSON.stringify(persisted)).not.toContain(structuredContent.pages[0]!.rows[0]!.body);
-			expect(message.details?.structuredContent).toBe(structuredContent);
-			const artifactPath = await manager.getArtifactPath(artifactId);
-			if (!artifactPath) throw new Error("Expected recoverable artifact");
-			expect(await Bun.file(artifactPath).text()).toContain(renderedPayload);
+			const bridged = await tool.execute("bridged", {}, undefined, undefined, { ...context, evalBridge: true });
+			const value = bridgeValueFromToolResult(tool.name, {}, bridged);
+			if (typeof value !== "object" || value === null || !("details" in value) || !("text" in value))
+				throw new Error("Expected eval details");
+			expect((value.details as MCPToolDetails).rawContent).toEqual([{ type: "text", text: body }]);
+			expect((value.details as MCPToolDetails).structuredContent).toEqual(structuredContent);
+			expect((value.details as MCPToolDetails).meta?.truncation).toBeUndefined();
+			expect(value.text).toContain(body);
 		} finally {
 			await manager.close();
 		}

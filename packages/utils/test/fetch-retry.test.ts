@@ -64,6 +64,25 @@ describe("fetchWithRetry", () => {
 		expect(attempt).toBe(2);
 	});
 
+	it("rethrows a thrown fetch error at once when shouldRetryError refuses it", async () => {
+		const deadline = new Error("deadline exceeded");
+		let attempt = 0;
+		const error = await rejectionOf(
+			fetchWithRetry("https://example.invalid/refused-error-retry", {
+				fetch: async () => {
+					attempt += 1;
+					throw deadline;
+				},
+				shouldRetryError: () => false,
+				defaultDelayMs: 1,
+				maxAttempts: 4,
+			}),
+		);
+
+		expect(error).toBe(deadline);
+		expect(attempt).toBe(1);
+	});
+
 	it("lets callers stop retries for deterministic response bodies", async () => {
 		let attempt = 0;
 		const customFetch = async () => {

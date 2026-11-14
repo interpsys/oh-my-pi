@@ -62,7 +62,7 @@ retry:
          - google-vertex/gemini-3-pro
 ```
 
-This follows the same rules as the primary's fallback: `retry.enabled` and `retry.modelFallback` must be on, candidates still cooling down, without credentials, or incompatible with native advisor history are skipped, and `retry.fallbackRevertPolicy: cooldown-expiry` returns the advisor to its primary model once the cooldown ends. Credential rotation is attempted before switching models. Short usage-limit blocks can instead be waited out within `retry.maxDelayMs` and the retry budget; longer/exhausted blocks pause the advisor.
+This follows the same rules as the primary's fallback: `retry.enabled` and `retry.modelFallback` must be on, candidates still cooling down, without credentials, or incompatible with native advisor history are skipped, and `retry.fallbackRevertPolicy: cooldown-expiry` returns the advisor to its primary model once the cooldown ends. Credential rotation is attempted before switching models, at most once per sibling account for a failing review. Short usage-limit blocks can instead be waited out within `retry.maxDelayMs` and the retry budget; longer/exhausted blocks pause the advisor.
 
 A classifier refusal by the advisor's primary model (for example Anthropic's `Refusal (cyber)`) is treated as a judgment of the reviewed content rather than a model failure: it puts no cooldown on that model and pins the advisor to its fallback. The pin lasts until a compaction (the session's or the advisor's own), a handoff, or a new conversation replaces that content; the next review then retries the primary under `retry.fallbackRevertPolicy`. A fallback model that refuses is skipped with the usual cooldown and does not pin, so a primary that only failed for another reason still returns once its cooldown ends.
 
@@ -225,6 +225,8 @@ Practical interpretation:
 `strict` with an `agent-end` advisor provides synchronous final review: the primary reaches its final boundary, the advisor reviews the accumulated run, then the primary can finish. Notes delivered at that boundary merge into one message, ordered newest turn first, then severity (`blocker` → `concern` → `nit`). Notes about earlier turns carry a `turns_ago` attribute and a dim `T-N` transcript marker between severity and advisor name. The first merged delivery, then at most once every 50 primary turns, includes guidance that findings may be outdated or wrong and may be ignored.
 
 A batch containing a note at or above `advisor.continueSeverity` can request at most one permitted continuation, even when several advisors report findings together. Stop/abort suppression, concern cooldown, plan-mode policy, and client preservation constraints apply to both buffered and live delivery. Otherwise the notes remain visible without restarting the primary. A continuation an advisor delivery starts does not schedule another review or advance cadence; its updates are captured and sent with the next review, without feeding advisor notes back into them.
+
+Starting that continuation cancels every advisor review of the work it revises that has not finished yet, except the review whose note started it. A cancelled review emits nothing, so it cannot raise the issue again while the agent is fixing it. Each advisor that lost a review reviews once at the continuation's final boundary instead, whatever its `reviewInterval`, covering the original work and the fix together.
 
 Keep turn reviews asynchronous while waiting for final reviews:
 

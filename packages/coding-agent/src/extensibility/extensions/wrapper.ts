@@ -10,7 +10,7 @@ import {
 	type ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
 import type { ComputerSafetyCheck, ImageContent, Static, TextContent, TSchema } from "@oh-my-pi/pi-ai";
-import { prompt, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
+import { prompt, sanitizeText, untilAborted, toError } from "@oh-my-pi/pi-utils";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import nativeDelegationTemplate from "../../prompts/tools/native-delegation.md" with { type: "text" };
 import {
@@ -24,6 +24,7 @@ import {
 	truncateForPrompt,
 } from "../../tools/approval";
 import { getApprovalGrants } from "../../tools/approval-cache";
+import { withToolApprovalScope } from "../../tools/approval-scope";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import { withFileMutationSession } from "../../tools/file-write-fallback";
 import { normalizeToolEventInput, resolveToolEventInput } from "../tool-event-input";
@@ -238,6 +239,16 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		onUpdate?: AgentToolUpdateCallback<TDetails, TParameters>,
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<TDetails, TParameters>> {
+		return withToolApprovalScope(() => this.#execute(toolCallId, params, signal, onUpdate, context));
+	}
+
+	async #execute(
+		toolCallId: string,
+		params: Static<TParameters>,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<TDetails, TParameters>,
+		context?: AgentToolContext,
+	): Promise<AgentToolResult<TDetails, TParameters>> {
 		// The agent loop emits `tool_call` at arg-prep time (session
 		// `beforeToolCall` wiring) so a handler revision lands before concurrency
 		// scheduling and `tool_execution_start`. Consume the marker
@@ -273,6 +284,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			userPolicies,
 			approvalGrants,
 			restrictions,
+			context,
 		);
 		if (preResolved.policy === "deny") {
 			throw denyError(preResolved, this.tool.name);
@@ -307,8 +319,14 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 					this.#agent,
 				)) as ToolCallEventResult | undefined;
 
-				if (callResult?.block) {
-					const reason = callResult.reason || "Tool execution was blocked by an extension";
+				if (callResult?.result) {
+					// Short-circuit: the handler's result is the call's successful result; the tool never runs.
+					cancelPreflight();
+					return { ...callResult.result, isError: false } as AgentToolResult<TDetails>;
+				}
+				if (callResult?.block || callResult?.abortTurn) {
+					const reason =
+						callResult.reason || callResult.abortTurn?.message || "Tool execution was blocked by an extension";
 					throw new Error(reason);
 				}
 				if (isNonBlankContext(callResult?.additionalContext)) {
@@ -345,6 +363,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		// input that newly resolves to `deny` is caught here even though the original passed the
 		// short-circuit above.
 		const resolvedArgs = approvalArgs(effectiveParams, context);
+		this.tool.bindApprovalTargets?.(resolvedArgs);
 		const resolved = resolveApproval(
 			this.tool,
 			resolvedArgs,
@@ -352,6 +371,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			userPolicies,
 			approvalGrants,
 			restrictions,
+			context,
 		);
 		context?.xdevTierResolved?.(resolved.tier);
 		if (resolved.policy === "deny") {
@@ -506,7 +526,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 				),
 			);
 		} catch (err) {
-			executionError = err instanceof Error ? err : new Error(String(err));
+			executionError = toError(err);
 			result = {
 				content: [{ type: "text", text: executionError.message }],
 				details: undefined as TDetails,

@@ -101,6 +101,13 @@ export interface SessionCompactEvent {
 	fromExtension: boolean;
 }
 
+/** Fired before the operator ends the session through a close the host can still refuse (can be cancelled). */
+export interface SessionBeforeShutdownEvent {
+	type: "session_before_shutdown";
+	/** Aborted when the close stops waiting: another close request, a signal, or the UI stopping. */
+	signal: AbortSignal;
+}
+
 /** Fired on process exit (SIGINT/SIGTERM) */
 export interface SessionShutdownEvent {
 	type: "session_shutdown";
@@ -172,6 +179,7 @@ export type SessionEvent =
 	| SessionCompactingEvent
 	| SessionCompactEvent
 	| SessionStopEvent
+	| SessionBeforeShutdownEvent
 	| SessionShutdownEvent
 	| SessionBeforeTreeEvent
 	| SessionTreeEvent
@@ -358,6 +366,37 @@ export interface ToolCallEventResult {
 	 * registration order; ignored when this or a later handler blocks the call.
 	 */
 	additionalContext?: string;
+	/**
+	 * Short-circuit result: the tool never executes and this result becomes the call's
+	 * result with `isError: false`. It takes precedence over `block`, so a handler may
+	 * return both (`block` + `reason` as the refusal an older host applies) and is
+	 * never executed twice. The first handler returning `result` ends the chain.
+	 */
+	result?: ToolCallShortCircuitResult;
+	/**
+	 * End the agent turn after this call's result is recorded, with no further
+	 * provider request. The call itself is still refused (`block`) or answered
+	 * (`result`); without either, the call is refused with `abortTurn.message`.
+	 * Distinct from a user interrupt: task subagents report a typed
+	 * `budget_exhausted` outcome.
+	 */
+	abortTurn?: ToolCallAbortTurn;
+}
+
+/** Typed reasons a `tool_call` handler may end the turn for. */
+export type ToolCallAbortTurnReason = "budget_exhausted";
+
+/** {@link ToolCallEventResult.abortTurn} payload. */
+export interface ToolCallAbortTurn {
+	reason: ToolCallAbortTurnReason;
+	/** Human-readable detail recorded with the outcome. */
+	message?: string;
+}
+
+/** {@link ToolCallEventResult.result} payload: the tool result returned in place of executing the tool. */
+export interface ToolCallShortCircuitResult {
+	content: (TextContent | ImageContent)[];
+	details?: unknown;
 }
 
 /**
@@ -486,6 +525,12 @@ export interface SessionCompactingResult {
 	prompt?: string;
 	/** Custom data to store in compaction entry */
 	preserveData?: Record<string, unknown>;
+}
+
+/** Return type for `session_before_shutdown` handlers */
+export interface SessionBeforeShutdownResult {
+	/** If true, cancel this shutdown attempt. */
+	cancel?: boolean;
 }
 
 /** Return type for `session_stop` handlers */

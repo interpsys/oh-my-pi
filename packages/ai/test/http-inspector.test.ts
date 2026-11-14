@@ -3,11 +3,17 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	appendRawEmptyResponseDump,
+	buildEmptyResponseDumpPayload,
 	buildHttp400DumpPayload,
+	type CapturedHttpErrorResponse,
+	finalizeErrorMessage,
 	pruneHttpRequestDumps,
+	type RawEmptyResponseDump,
 	type RawHttpRequestDump,
 	rewriteClinePassError,
 	shouldDumpRejectedRequest,
+	stripRawHttpRequestDiagnostics,
 } from "@oh-my-pi/pi-ai/utils/http-inspector";
 
 class HttpError extends Error {
@@ -18,6 +24,24 @@ class HttpError extends Error {
 		super(message);
 	}
 }
+
+const occurrences = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
+
+const MUSE_DENIAL_BODY =
+	"This API key is billed to a Muse Code subscription. Muse Code subscriptions cover requests from the Muse Code client only. Use it in Muse Code, or use a pay-as-you-go API key for other clients.";
+const MUSE_DENIAL_SUFFIX = " (type=permission_error param=client_attestation_denied)";
+const MUSE_DENIAL_PAYLOAD = {
+	error: {
+		message: MUSE_DENIAL_BODY,
+		type: "permission_error",
+		param: "client_attestation_denied",
+	},
+};
+const MUSE_DENIAL_RESPONSE: CapturedHttpErrorResponse = {
+	status: 403,
+	bodyText: JSON.stringify(MUSE_DENIAL_PAYLOAD),
+	bodyJson: MUSE_DENIAL_PAYLOAD,
+};
 
 const dump: RawHttpRequestDump = {
 	provider: "anthropic",
@@ -155,6 +179,71 @@ describe("rewriteClinePassError", () => {
 	});
 });
 
+describe("finalizeErrorMessage", () => {
+	it("prints a provider body the thrown message already carries once while keeping the type/param suffix", async () => {
+		const message = await finalizeErrorMessage(new Error(`403 ${MUSE_DENIAL_BODY}`), undefined, MUSE_DENIAL_RESPONSE);
+
+		expect(occurrences(message, MUSE_DENIAL_BODY)).toBe(1);
+		expect(message.endsWith(MUSE_DENIAL_SUFFIX)).toBe(true);
+	});
+	it("keeps the type/param suffix the thrown message already carries instead of repeating it", async () => {
+		const message = await finalizeErrorMessage(
+			new Error(`403 ${MUSE_DENIAL_BODY}${MUSE_DENIAL_SUFFIX}`),
+			undefined,
+			MUSE_DENIAL_RESPONSE,
+		);
+
+		expect(message).toBe(`403 ${MUSE_DENIAL_BODY}${MUSE_DENIAL_SUFFIX}`);
+	});
+
+	it("restores the full captured body over a truncated copy instead of appending a second copy", async () => {
+		const truncated = MUSE_DENIAL_BODY.slice(0, 60);
+		const message = await finalizeErrorMessage(new Error(`403 ${truncated}`), undefined, MUSE_DENIAL_RESPONSE);
+
+		expect(message).toBe(`403 ${MUSE_DENIAL_BODY}${MUSE_DENIAL_SUFFIX}`);
+		expect(occurrences(message, MUSE_DENIAL_BODY)).toBe(1);
+	});
+
+	it("prints a truncated body once when a retry header is present, with the hint last", async () => {
+		const core = "slow down ".repeat(500);
+		const payload = { error: { message: core, type: "rate_limit" } };
+		const captured: CapturedHttpErrorResponse = {
+			status: 429,
+			bodyText: JSON.stringify(payload),
+			bodyJson: payload,
+			headers: new Headers({ "retry-after-ms": "1000" }),
+		};
+		const message = await finalizeErrorMessage(new Error(`429 ${core.slice(0, 4096)}`), undefined, captured);
+
+		expect(message).toBe(`429 ${core} (type=rate_limit) retry-after-ms=1000`);
+	});
+
+	it("keeps the retry hint when a bodyless status line is replaced by the captured payload", async () => {
+		const headers = new Headers({ "retry-after-ms": "250" });
+		const captured: CapturedHttpErrorResponse = { ...MUSE_DENIAL_RESPONSE, headers };
+		const message = await finalizeErrorMessage(new Error("403 status code (no body)"), undefined, captured);
+
+		expect(message).toBe(`403 status code: ${MUSE_DENIAL_BODY}${MUSE_DENIAL_SUFFIX} retry-after-ms=250`);
+	});
+
+	it("restores a truncated body that starts like the status code without touching the status code", async () => {
+		const core = "403 forbidden by upstream policy";
+		const payload = { error: { message: core, type: "permission_error" } };
+		const captured: CapturedHttpErrorResponse = { status: 403, bodyText: JSON.stringify(payload), bodyJson: payload };
+		const message = await finalizeErrorMessage(new Error("403 403"), undefined, captured);
+
+		expect(message).toBe(`403 ${core} (type=permission_error)`);
+	});
+
+	it("joins a provider body the thrown message does not carry", async () => {
+		const payload = { message: "upstream exploded" };
+		const captured: CapturedHttpErrorResponse = { status: 500, bodyText: JSON.stringify(payload), bodyJson: payload };
+		const message = await finalizeErrorMessage(new Error("500 boom"), undefined, captured);
+
+		expect(message).toBe("500 boom\nupstream exploded");
+	});
+});
+
 describe("pruneHttpRequestDumps", () => {
 	const roots: string[] = [];
 	afterEach(async () => {
@@ -194,5 +283,99 @@ describe("pruneHttpRequestDumps", () => {
 		await pruneHttpRequestDumps(dir, { now, maxAgeMs: 7 * DAY_MS, maxTotalBytes: 1_000, keep: "just-written.json" });
 
 		expect(await fs.readdir(dir)).toEqual(["just-written.json"]);
+	});
+});
+
+describe("appendRawEmptyResponseDump and stripRawHttpRequestDiagnostics", () => {
+	const roots: string[] = [];
+	afterEach(async () => {
+		await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true })));
+	});
+
+	const emptyDump: RawEmptyResponseDump = {
+		provider: "google-antigravity",
+		api: "google-gemini-cli",
+		model: "gemini-4-argon",
+		endpoint: "https://daily-cloudcode-pa.sandbox.googleapis.com?token=secret-query",
+		url: "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse&key=secret-key",
+		status: 200,
+		headers: {
+			"content-type": "text/event-stream",
+			"x-goog-api-key": "secret-header-value",
+			"set-cookie": "session=secret",
+		},
+		events: [
+			{
+				event: "message",
+				data: '{"response":{"usageMetadata":{"promptTokenCount":146282},"unknownVendorField":{"reason":"ZERO_OUT"}},"extraTopLevel":"keep-me"}',
+				raw: [
+					'data: {"response":{"usageMetadata":{"promptTokenCount":146282},"unknownVendorField":{"reason":"ZERO_OUT"}},"extraTopLevel":"keep-me"}',
+				],
+				parsed: {
+					response: {
+						usageMetadata: { promptTokenCount: 146282 },
+						unknownVendorField: { reason: "ZERO_OUT" },
+					},
+					extraTopLevel: "keep-me",
+				},
+			},
+		],
+	};
+
+	it("redacts sensitive headers and query strings while preserving unknown SSE fields", () => {
+		const message = "Cloud Code Assist API returned an empty response: {}";
+		const payload = buildEmptyResponseDumpPayload(emptyDump, message);
+
+		expect(payload.provider).toBe("google-antigravity");
+		expect(payload.model).toBe("gemini-4-argon");
+		expect(payload.endpoint).toBe("https://daily-cloudcode-pa.sandbox.googleapis.com/[redacted-query]");
+		expect(payload.url).toBe(
+			"https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent[redacted-query]",
+		);
+		expect(payload.headers?.["x-goog-api-key"]).toBe("[redacted]");
+		expect(payload.headers?.["set-cookie"]).toBe("[redacted]");
+		expect(payload.headers?.["content-type"]).toBe("text/event-stream");
+		expect(payload.events[0].parsed).toEqual({
+			response: {
+				usageMetadata: { promptTokenCount: 146282 },
+				unknownVendorField: { reason: "ZERO_OUT" },
+			},
+			extraTopLevel: "keep-me",
+		});
+		expect(payload.errorResponse).toEqual({ status: 200, message });
+	});
+
+	it("writes dump files with restrictive permissions and strips diagnostic lines for RPC", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-empty-dumps-"));
+		roots.push(dir);
+		const baseMessage = 'Cloud Code Assist API returned an empty response: {"candidates":0}';
+
+		const withDump = await appendRawEmptyResponseDump(baseMessage, emptyDump, { dumpDir: dir });
+		expect(withDump).toContain(`${baseMessage}\nraw-empty-response=${dir}/`);
+		expect(stripRawHttpRequestDiagnostics(withDump)).toBe(baseMessage);
+
+		const dumpPath = withDump.split("\nraw-empty-response=")[1];
+		expect(dumpPath).toBeDefined();
+		const stat = await fs.stat(dumpPath!);
+		if (process.platform !== "win32") {
+			expect(stat.mode & 0o777).toBe(0o600);
+		}
+		const saved = JSON.parse(await fs.readFile(dumpPath!, "utf8"));
+		expect(saved.provider).toBe("google-antigravity");
+		expect(saved.model).toBe("gemini-4-argon");
+		expect(saved.events[0].parsed.response.unknownVendorField).toEqual({ reason: "ZERO_OUT" });
+		expect(saved.events[0].parsed.extraTopLevel).toBe("keep-me");
+	});
+
+	it("preserves the original error message and appends save-failed line when storage fails", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-empty-dumps-fail-"));
+		roots.push(dir);
+		const blockedTarget = path.join(dir, "not-a-directory");
+		await fs.writeFile(blockedTarget, "file");
+
+		const baseMessage = 'Cloud Code Assist API returned an empty response: {"candidates":0}';
+		const result = await appendRawEmptyResponseDump(baseMessage, emptyDump, { dumpDir: blockedTarget });
+		expect(result.startsWith(`${baseMessage}\nraw-empty-response-save-failed=`)).toBe(true);
+		expect(stripRawHttpRequestDiagnostics(result)).toBe(baseMessage);
 	});
 });

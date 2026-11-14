@@ -54,7 +54,9 @@ export function formatTaskResultSummary(
 	options: { totalDurationMs: number; mergeSummary?: string },
 ): string {
 	const status = result.aborted
-		? "cancelled"
+		? result.abortReason?.startsWith("budget_exhausted")
+			? "budget exhausted"
+			: "cancelled"
 		: result.exitCode === 0 && result.error
 			? "merge failed"
 			: result.exitCode === 0

@@ -258,6 +258,8 @@ Opted in: Muse Code `muse-spark-1.3`, `muse-spark-1.3-contributor`, and the four
 
 The routed-subscription registry axes (`upstream-rotation`, `region-upstreams-global|us|eu`, `region-limits-eu`, `credit-rates`, `list-price-from`, `routing-family`, `policy-aliases`, `entitlement`, `default-reasoning-off`) describe a gateway whose proxy fans one model out to several upstreams. They are read through `src/compat/factory-droid.ts` by Factory Droid discovery and its request provider, not materialized by `buildModel`. A provider-wide `region-upstreams-*` rule is the upstream serving table and a model rule replaces it for that region. `list-price-from "<provider>" ["<id>"]` shows a bundled row's list price beside the subscription's own billing; unlike seed values it is resolved at runtime and degrades to the seed's zero cost when the row is gone. See [`providers/factory-droid.kdl`](providers/factory-droid.kdl), whose wire and billing pool per model are `api-routes` and `quota-tiers` rules in `runtime/behavior.kdl`.
 
+`credit-rates` accepts the same optional `effective-rates` block of named dated cards as `cost-patch`, parsed by the same code: each card has a distinct ISO UTC `effective-from` and any of `input`/`output`/`cache-read`, and the latest card at or before the moment the model browser renders overwrites the legs it names. A vendor credit promotion is two cards, the discounted rate from its start and the base rate again from its end, so a card left behind after the end changes nothing. See [`providers/factory-droid.kdl`](providers/factory-droid.kdl).
+
 ### Time-based pricing
 
 The catalog object axis `time-based-cost` materializes into `ModelCost.timeBased`. It uses **named child objects**, not KDL arrays or repeated anonymous windows. For example, inside a matching provider/model scope:
@@ -314,6 +316,8 @@ The highest-ranked matching assignment wins for that axis. Two distinct rules th
 ### Capability gating
 
 Wire axes are considered for every matching target. Thinking axes require `reasoning`, except that an exact model selector declaring `thinking-efforts` opens the gate for reviewed corrections. A winning `thinking-upgrade-neutral #true` scoped to a recognized class, family, revision, or model selector also opens it when a matching effort ladder exists; provider-wide opt-in alone does not. Materializing a neutral spec as reasoning-capable requires that opt-in and no explicit thinking vocabulary. A winning `thinking-unverified #true` (scoped `class "unknown"` on hosts whose model list carries no capability metadata) instead offers an unclassified neutral spec its ladder as `ThinkingConfig.unverified`: off until the user picks an effort, and sent as non-reasoning without one; it never changes compat. Family and revision selectors never match targets missing that rank. An unmatched target resolves to empty maps; the cascade does not infer negative capabilities from absence.
+
+An explicit spec ladder (a discovery advertisement such as OpenRouter's `supported_efforts`, or a bundled/cached row) wins over a rule's `thinking-efforts`. `thinking-max-effort "<tier>"` is the one thinking axis that binds it too: the resolved ladder, from whichever layer, drops every tier above the winning ceiling together with those tiers' `effortMap`, `effortRouting` and `effortBudgets` entries, and a default level above it falls to the new top tier.
 
 ## Runtime behavior grammar
 
@@ -408,10 +412,18 @@ auth "anthropic" {
     native-auth-api "bedrock-converse-stream"     // provider transport resolves auth; scan plans pin this API without secrets
     available #false
     show-in-login-list #false
+    disabled "Why it is paused, shown to users"  // turns the provider off: no login, no credential reaches it
+    login-warning "Account risk to accept"       // a new login asks the user to type "yes" first
 }
 ```
 
 `org-scoped-identity #true` keeps credentials and usage reports for different organizations separate even when they share an email; absent or `#false` uses ordinary account identity. `oauth-token-env` takes one or more ordered, non-empty env names carrying this provider's own OAuth bearer. When present, availability ignores other provider-env aliases, and usage probes accept only stored OAuth credentials or the first set bearer from that list; absent providers keep the ordinary API-key env behavior.
+
+`login-subscription #true` marks login-sourced API keys as subscription billing, leaving pasted and environment keys metered; absent or `#false` keeps all API keys metered.
+
+`disabled "<reason>"` turns a provider off without removing its code or anyone's stored credentials: it leaves the built-in login roster, `login` and token refresh refuse it, usage probes skip it, and no key source (runtime, `models.yml`, stored, broker, env) resolves for it, so nothing calls the provider; a request names the reason. An extension that registers its own OAuth login under the paused id takes the id back, since that is the end user's choice. Delete the line to turn it back on — stored logins come back as they were.
+
+`login-warning "<text>"` keeps a provider usable but makes every new login accept a risk first: the login list marks it "(at your own risk)", and `login` shows the text and starts the flow only after the user types `yes`; any other answer or a cancel stores nothing. Stored logins, token refresh and requests are not asked again. An extension that registers its own OAuth login under the id owns that prompt instead.
 
 Login kinds:
 

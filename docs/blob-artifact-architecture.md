@@ -90,7 +90,7 @@ Before a session entry is written — incremental append (`#appendToSessionFile`
 Key behaviors:
 
 1. **Large string truncation**: ordinary strings exceeding 500,000 characters are cut and suffixed with `"[Session persistence truncated large content]"`. Signed blocks, signature fields, redacted/encrypted reasoning, Anthropic server-tool history, and Anthropic compaction carriers are preserved verbatim for valid provider replay.
-2. **Duplicate/transient field stripping**: `jsonlEvents` is removed. OpenAI Responses thinking signatures already covered by the native provider payload are omitted from the persisted copy, as is MCP `structuredContent` whose rendered output was spilled to an artifact. In-memory entries remain intact.
+2. **Duplicate/transient field stripping**: `jsonlEvents` is removed. OpenAI Responses thinking signatures already covered by the native provider payload are omitted from the persisted copy. In-memory entries remain intact. (Spilled direct MCP results never reach persistence with `rawContent` text or `structuredContent`: the spill drops both from the live result, since the artifact holds them.)
 3. **Image externalization to blobs**:
    - image blocks in `content`, image payloads in `images[]`, snapcompact `frames[]`, and `image_generation_call.result` are externalized when not already blob refs and base64 length is at least threshold (`BLOB_EXTERNALIZE_THRESHOLD = 1024`),
    - provider-style `image_url` data URLs are externalized when they start with `data:image/` and contain `;base64,`,
@@ -175,7 +175,7 @@ Handled by `AgentProtocolHandler` over registered active session artifact direct
 
 - `agent://<id>` returns markdown text; nested subagent outputs use the dotted id (`agent://Parent.Child` reads `Parent.Child.md`)
 - resolution refreshes persisted agent-roster references when a calling session file is available and searches that root session's artifact directory before process-global registry directories
-- `write agent://<id>` sends a peer message when IRC is available; `agent://all` is write-only broadcast, not an output file
+- `write agent://<id>` sends a peer message when IRC is available; `agent://all` is a write-only broadcast for the main agent (refused from subagents), not an output file
 - a slash path is always JSON extraction: `agent://<id>/<key>/<index>/…` walks object keys and array indexes (`agent://Parent.Child/reports/0/data`)
 - extraction reads the `<id>.json` sidecar when present, else parses `<id>.md`; it requires valid JSON and returns `application/json` (a string leaf is returned as `text/markdown` prose)
 - an id with no `<id>.md` yet that is registered in the agent registry (the registry `write agent://<id>` delivers to) resolves to a progress document instead of an error: the agent's status, every accepted `yield` payload so far (non-terminal sections included), and its latest assistant text, read from the live session or else its retained session file. Once `<id>.md` exists it wins. JSON-path extraction on such an id throws `Output <id> is not published yet`
