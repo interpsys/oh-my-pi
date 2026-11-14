@@ -580,8 +580,9 @@ jobs:
               "$chrome_bin" --version
               echo "PUPPETEER_EXECUTABLE_PATH=$chrome_bin" >> "$GITHUB_ENV"
          - name: Test coding-agent native/unit bucket
+           # 4 chunks on a 4-vCPU hosted runner starve timing-sensitive tests (budgets, grace windows); vmon has headroom.
            env:
-              OMP_TEST_CONCURRENCY: "4"
+              OMP_TEST_CONCURRENCY: ${{ github.repository == 'can1357/oh-my-pi' && '4' || '2' }}
               OMP_TEST_SHARD: ${{ matrix.shard }}
            run: bun run ci:test:coding-agent:native
 
