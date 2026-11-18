@@ -168,7 +168,7 @@ describe("wait", () => {
 		expect(first.useless).toBe(true);
 		expect(first.details?.jobs?.[0]).toMatchObject({ id, status: "running" });
 		expect(notice(first)).toBeUndefined();
-		expect(report(first)).toContain("within 5m;");
+		expect(report(first)).toContain("within 5m.");
 		expect(report(first)).toContain("Call `wait` right away with no other tool call: it then blocks up to 15m.");
 		expect(notice(await elapse(tool, 900_000))).toContain("20m");
 		const capped = await elapse(tool, 900_000);
@@ -207,10 +207,10 @@ describe("wait", () => {
 		manager.register("bash", "build", async () => build.promise, { ownerId: "Main" });
 		const tool = new WaitTool(session(manager, "Main", false, { getContextMessages: latestTurn() }));
 		// The first wait of a streak keeps the floor: the agent has not yet shown it has nothing else to do.
-		expect(notice(await elapse(tool, 5_000))).toBeUndefined();
-		const top = await elapse(tool, 240_000);
-		expect(report(top)).toContain("within 4m");
-		expect(notice(top)).toContain("4m5s");
+		expect(notice(await elapse(tool, 300_000))).toBeUndefined();
+		const top = await elapse(tool, 900_000);
+		expect(report(top)).toContain("within 15m");
+		expect(notice(top)).toContain("20m");
 		build.resolve("done");
 	});
 
@@ -221,13 +221,13 @@ describe("wait", () => {
 		manager.register("bash", "build", async () => build.promise, { ownerId: "Main" });
 		const interactive = new WaitTool(session(manager, "Main", false, { tuiTranscript: true }));
 		expect(interactive.description).toContain("End your turn instead");
-		expect(report(await elapse(interactive, 5_000))).toContain(
+		expect(report(await elapse(interactive, 300_000))).toContain(
 			"End your turn: results and messages start your next one.",
 		);
 		// Print mode exits and cancels the jobs when the turn ends; ACP holds results until the client's next prompt.
 		const headless = new WaitTool(session(manager));
 		expect(headless.description).not.toContain("End your turn");
-		const headlessReport = report(await elapse(headless, 5_000));
+		const headlessReport = report(await elapse(headless, 300_000));
 		expect(headlessReport).not.toContain("End your turn");
 		expect(headlessReport).toContain("Call `wait` right away with no other tool call");
 		build.resolve("done");
