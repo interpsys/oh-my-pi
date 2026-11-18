@@ -9,8 +9,8 @@ const repoRoot = path.resolve(import.meta.dir, "../../..");
 
 it("distinguishes source SDK provenance from a compiled fork revision without changing semver", () => {
 	expect(BUILD_INFO).toEqual({ version: VERSION, commit: null, variant: "orb.1" });
-	expect(VERSION).toBe("18.20.0");
-	expect(BUILD_VERSION).toBe("18.20.0 (orb.1 source)");
+	expect(VERSION).toBe("18.22.2");
+	expect(BUILD_VERSION).toBe("18.22.2 (orb.1 source)");
 });
 
 it("embeds fork provenance independently of the runtime checkout and environment", async () => {
@@ -37,9 +37,9 @@ it("embeds fork provenance independently of the runtime checkout and environment
 	});
 	expect(result.exitCode).toBe(0);
 	expect(JSON.parse(result.stdout.toString())).toEqual({
-		version: "18.20.0",
+		version: "18.22.2",
 		commit,
 		variant: "orb.1",
-		display: `18.20.0 (orb.1 ${commit.slice(0, 7)})`,
+		display: `18.22.2 (orb.1 ${commit.slice(0, 7)})`,
 	});
 }, 30_000);

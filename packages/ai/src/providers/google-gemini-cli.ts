@@ -13,7 +13,7 @@ import {
 	getAntigravityModelWireProfile,
 	getGeminiCliHeaders,
 } from "@oh-my-pi/pi-catalog/wire/gemini-headers";
-import { extractHttpStatusFromError, fetchWithRetry, readSseJson } from "@oh-my-pi/pi-utils";
+import { extractHttpStatusFromError, fetchWithRetry, readSseJson, type SseEventObserver } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import { oauthAccountKey } from "../auth/types";
 import type {
@@ -40,6 +40,7 @@ import {
 	type RawHttpRequestDump,
 } from "../utils/http-inspector";
 import { getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs } from "../utils/idle-iterator";
+import { notifyProviderResponse } from "../utils/provider-response";
 // Refresh is the sole responsibility of AuthStorage (broker-aware, single-flighted);
 // the stream provider trusts the access token threaded through `options.apiKey`.
 import { normalizeSchemaForCCA } from "../utils/schema";
@@ -50,6 +51,9 @@ import type { Content, FunctionCallingConfigMode, ThinkingConfig } from "./googl
 import {
 	convertMessages,
 	convertTools,
+	CONTINUATION_MAX_ATTEMPTS,
+	followGoogleContinuations,
+	googleStreamRequestId,
 	GoogleTextBlocks,
 	type GoogleThinkingLevel,
 	hasMeaningfulGoogleContent,
@@ -499,6 +503,8 @@ interface CloudCodeAssistRequest {
 			};
 		};
 		labels?: Record<string, string>;
+		/** Resumes a generation Google split into segments (`followGoogleContinuations`). */
+		continuationToken?: string;
 	};
 	requestType?: string;
 	userAgent?: string;
@@ -699,18 +705,24 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 			const callerSignal = options?.signal;
 			let freshConnection = providerState?.freshConnection === true;
 			let watchdog: ByteWatchdog | undefined;
-			const fetchResponse = (endpoint: string, maxAttempts: number): Promise<Response> =>
-				fetchWithRetry(`${endpoint}/v1internal:streamGenerateContent?alt=sse`, {
+			const fetchResponse = (
+				url: string,
+				body: string,
+				maxAttempts: number,
+				retryTimeouts: boolean,
+			): Promise<Response> =>
+				fetchWithRetry(url, {
 					method: "POST",
 					headers: requestHeaders,
-					body: requestBodyJson,
+					body,
 					signal: callerSignal,
 					maxAttempts,
 					defaultDelayMs: attempt => BASE_DELAY_MS * 2 ** attempt,
 					maxDelayMs: options?.maxRetryDelayMs ?? RATE_LIMIT_BUDGET_MS,
 					timeout: false,
-					// HTTP 429/5xx and network errors retry here; a timed-out request leaves the endpoint.
-					shouldRetryError: () => !watchdog?.timedOut,
+					// HTTP 429/5xx and network errors retry here; a timed-out request leaves the
+					// endpoint unless it is a continuation resume.
+					shouldRetryError: () => retryTimeouts || !watchdog?.timedOut,
 					fetch: (input, init) => {
 						watchdog?.clear();
 						watchdog = armByteWatchdog(callerSignal, firstEventTimeoutMs, idleTimeoutMs);
@@ -763,6 +775,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 
 			const streamResponse = async (
 				activeResponse: Response,
+				streamUrl: string,
 			): Promise<{
 				meaningful: boolean;
 				strippedPlanningLeak: boolean;
@@ -772,6 +785,8 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				capturedOmittedEvents: number;
 				capturedOmittedBytes: number;
 			}> => {
+				// Headers already passed the status check. Tell observers before the body is read.
+				await notifyProviderResponse(options, activeResponse, model, googleStreamRequestId(activeResponse));
 				if (!activeResponse.body) {
 					throw new AIError.ProviderResponseError("No response body", {
 						provider: model.provider,
@@ -865,38 +880,69 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					textBlocks.sign(thoughtSignature, false);
 				};
 
-				const responseSignal = watchdog?.signal ?? callerSignal;
 				const onSseEvent = options?.onSseEvent;
+				const sseObserver: SseEventObserver = event => {
+					onSseEvent?.({ event: event.event ?? "message", data: event.data, raw: [...event.raw] }, model);
+					if (!captureActive) return;
+					const rawLines = [...event.raw];
+					const eventBytes =
+						Buffer.byteLength(event.event ?? "", "utf8") +
+						Buffer.byteLength(event.data, "utf8") +
+						rawLines.reduce((sum, line) => sum + Buffer.byteLength(line, "utf8"), 0);
+					if (
+						capturedRawEvents.length >= RAW_EMPTY_RESPONSE_MAX_EVENTS ||
+						capturedBytes + eventBytes > RAW_EMPTY_RESPONSE_MAX_BYTES
+					) {
+						capturedTruncated = true;
+						capturedOmittedEvents += 1;
+						capturedOmittedBytes += eventBytes;
+						return;
+					}
+					capturedBytes += eventBytes;
+					capturedRawEvents.push({
+						event: event.event,
+						data: event.data,
+						raw: rawLines,
+					});
+				};
+				// Each resume is its own physical request: fetchResponse re-arms the byte
+				// watchdog per attempt, and the segment reads under that watchdog's signal.
+				// A resume carries a continuation token, not the original prompt, so a
+				// stalled one retries: failing it would discard every streamed segment.
 				// The byte observer runs before SSE framing, so thinking, comments and
 				// partial JSON keep the transport alive without visible output.
-				const chunks = readSseJson<CloudCodeAssistResponseChunk>(
-					activeResponse.body,
-					responseSignal,
-					event => {
-						onSseEvent?.({ event: event.event ?? "message", data: event.data, raw: [...event.raw] }, model);
-						if (!captureActive) return;
-						const rawLines = [...event.raw];
-						const eventBytes =
-							Buffer.byteLength(event.event ?? "", "utf8") +
-							Buffer.byteLength(event.data, "utf8") +
-							rawLines.reduce((sum, line) => sum + Buffer.byteLength(line, "utf8"), 0);
-						if (
-							capturedRawEvents.length >= RAW_EMPTY_RESPONSE_MAX_EVENTS ||
-							capturedBytes + eventBytes > RAW_EMPTY_RESPONSE_MAX_BYTES
-						) {
-							capturedTruncated = true;
-							capturedOmittedEvents += 1;
-							capturedOmittedBytes += eventBytes;
-							return;
-						}
-						capturedBytes += eventBytes;
-						capturedRawEvents.push({
-							event: event.event,
-							data: event.data,
-							raw: rawLines,
-						});
-					},
-					byteLength => watchdog?.onBytes(byteLength),
+				const resumeSegment = async (continuationToken: string) => {
+					const resumed = await fetchResponse(
+						streamUrl,
+						JSON.stringify({ ...requestBody, request: { ...requestBody.request, continuationToken } }),
+						CONTINUATION_MAX_ATTEMPTS,
+						true,
+					);
+					if (!resumed.ok || !resumed.body) {
+						const errorText = await resumed.text();
+						throw new AIError.GeminiCliApiError(
+							`Cloud Code Assist API error (${resumed.status}) resuming a long generation: ${errorText}`,
+							resumed.status,
+							{ headers: resumed.headers },
+						);
+					}
+					await notifyProviderResponse(options, resumed, model, googleStreamRequestId(resumed));
+					return readSseJson<CloudCodeAssistResponseChunk>(
+						resumed.body,
+						watchdog?.signal ?? callerSignal,
+						sseObserver,
+						byteLength => watchdog?.onBytes(byteLength),
+					);
+				};
+				const chunks = followGoogleContinuations(
+					readSseJson<CloudCodeAssistResponseChunk>(
+						activeResponse.body,
+						watchdog?.signal ?? callerSignal,
+						sseObserver,
+						byteLength => watchdog?.onBytes(byteLength),
+					),
+					chunk => chunk.response,
+					resumeSegment,
 				);
 				for await (const chunk of chunks) {
 					if (captureActive && capturedRawChunks.length < RAW_EMPTY_RESPONSE_MAX_EVENTS && !capturedTruncated) {
@@ -1047,12 +1093,18 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 
 			for (let i = 0; i < endpoints.length; i++) {
 				const endpoint = endpoints[i];
+				const streamUrl = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
 				const isLastEndpoint = i === endpoints.length - 1;
 				try {
 					started = false;
 					resetOutput();
 
-					const response = await fetchResponse(endpoint, isLastEndpoint ? MAX_RETRIES + 1 : 1);
+					const response = await fetchResponse(
+						streamUrl,
+						requestBodyJson,
+						isLastEndpoint ? MAX_RETRIES + 1 : 1,
+						false,
+					);
 
 					if (!response.ok) {
 						if (AIError.isTransientStatus(response.status)) {
@@ -1079,7 +1131,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					// Never repeat an identical prompt after a complete empty response.
 					// Try the alternate endpoint once, then let session recovery append
 					// its bounded continuation reminder before sending another request.
-					const streamed = await streamResponse(response);
+					const streamed = await streamResponse(response, streamUrl);
 					const thoughtOnly = hasThinkingOutput();
 					const acceptedSilence =
 						options?.acceptEmptyResponse === true &&
@@ -1091,7 +1143,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 							? undefined
 							: {
 									status: response.status,
-									url: response.url || `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
+									url: response.url || streamUrl,
 									headers: Object.fromEntries(response.headers.entries()),
 									events: streamed.capturedRawEvents,
 									chunks: streamed.capturedRawChunks,

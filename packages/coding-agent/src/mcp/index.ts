@@ -20,6 +20,8 @@ export * from "./manager";
 export * from "./process-opt-out";
 // OAuth Discovery
 export * from "./oauth-discovery";
+// Reconnect
+export * from "./reload";
 // Tool bridge
 export * from "./tool-bridge";
 // Tool cache
