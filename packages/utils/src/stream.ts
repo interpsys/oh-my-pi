@@ -322,15 +322,11 @@ async function* readSseFrames<T>(
 	signal?: AbortSignal,
 	onEvent?: SseEventObserver,
 	onDone?: () => void,
-	onBytes?: (byteLength: number) => void,
 ): AsyncGenerator<SseFrame<T>> {
 	// The diagnostic observer is the only reader of `raw`; capture it exactly
 	// when one is attached so the hot path stays allocation-free.
-	for await (const sse of readSseEvents(
-		stream,
-		signal,
-		onEvent || onBytes ? { captureRaw: onEvent !== undefined, onBytes } : undefined,
-	)) {
+	for await (const sse of readSseEvents(stream, signal, onEvent ? { captureRaw: true } : undefined)) {
+		const isTrailing = trailingEvents.has(sse);
 		notifySseEventObserver(onEvent, sse);
 		const data = sse.data;
 		if (data === "" || data === "[DONE]") {
@@ -340,7 +336,6 @@ async function* readSseFrames<T>(
 			}
 			continue;
 		}
-		const isTrailing = trailingEvents.has(sse);
 		try {
 			yield { ok: true, value: JSON.parse(data) as T };
 		} catch (err) {
@@ -360,9 +355,8 @@ export async function* readSseJson<T>(
 	stream: ReadableStream<Uint8Array>,
 	signal?: AbortSignal,
 	onEvent?: SseEventObserver,
-	onBytes?: (byteLength: number) => void,
 ): AsyncGenerator<T> {
-	for await (const frame of readSseFrames<T>(stream, signal, onEvent, undefined, onBytes)) {
+	for await (const frame of readSseFrames<T>(stream, signal, onEvent)) {
 		if (!frame.ok) throw frame.error;
 		yield frame.value;
 	}
@@ -551,8 +545,6 @@ export interface ReadSseEventsOptions {
 	 * per line on the token path.
 	 */
 	captureRaw?: boolean;
-	/** Observes raw body chunks, including comments and incomplete SSE frames. */
-	onBytes?: (byteLength: number) => void;
 }
 
 export async function* readSseEvents(
@@ -566,7 +558,6 @@ export async function* readSseEvents(
 	const source = abortableSource(stream, signal);
 	try {
 		for await (const chunk of source) {
-			options?.onBytes?.(chunk.byteLength);
 			const text = lineBuffer.appendAndFlushText(chunk, SSE_DECODER);
 			if (text === undefined) continue;
 			let start = 0;

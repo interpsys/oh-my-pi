@@ -11,6 +11,10 @@
 - Eval `tool.mcp__<server>_<tool>(...)` returns the MCP payload itself (`structuredContent`, else the JSON-decoded text, else the text), and an MCP error result raises instead of returning a flagged object; MCP image blocks still display
 - Python eval `b = await judge_batch(...)` waits until every item settled and returns the batch; a plain call still returns at once
 
+### Removed
+
+- Fork (orb.2): removed every fork-only Antigravity / Gemini CLI patch and restored upstream 18.22.2 behavior: `google-antigravity` is paused again in its auth rules, the bundled `google-antigravity/gemini-4-carbon` row is gone, the Cloud Code Assist byte watchdog, raw empty-response dumps, no-identical-replay and segmented-resume changes are reverted, and the same-model Antigravity INVALID_ARGUMENT / empty-response continuation is removed. Use Google's own `agy` CLI for Antigravity
+
 ### Fixed
 
 - Python eval cells compile as `<cell-N>` and register their source, so `inspect.getsource` works on functions defined in earlier cells and tracebacks show the source lines

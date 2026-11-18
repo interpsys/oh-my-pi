@@ -1553,9 +1553,9 @@ describe("per-call model preflight", () => {
 			...createMockModel({ id: "claude-sonnet-5-5", reasoning: true }),
 			provider: "anthropic",
 		};
-		const carbon = {
-			...createMockModel({ id: "gemini-4-carbon", reasoning: true }),
-			provider: "google-antigravity",
+		const sol = {
+			...createMockModel({ id: "gpt-6.2-sol", reasoning: true }),
+			provider: "openai-codex",
 		};
 		const coder: AgentDefinition = {
 			...AGENT,
@@ -1571,14 +1571,14 @@ describe("per-call model preflight", () => {
 					"task.maxRecursionDepth": 2,
 					"task.perCallModel": "on",
 					"task.agentModelOverrides": { coder: "anthropic/claude-sonnet-5-5" },
-					modelRoles: { review: "google-antigravity/gemini-4-carbon" },
+					modelRoles: { review: "openai-codex/gpt-6.2-sol" },
 				}),
 			}),
 			{
 				getActiveModelString: () => "mock/parent",
 				modelRegistry: {
-					getAll: () => [opus, sonnet, carbon],
-					getAvailable: () => [opus, sonnet, carbon],
+					getAll: () => [opus, sonnet, sol],
+					getAvailable: () => [opus, sonnet, sol],
 					isBackgroundRefreshPending: () => false,
 				},
 			},
@@ -1594,14 +1594,14 @@ describe("per-call model preflight", () => {
 			),
 		).rejects.toThrow(/not approved/);
 
-		const carbonPolicy = await resolveEffectiveSubagentPolicy(
+		const solPolicy = await resolveEffectiveSubagentPolicy(
 			request({
 				session: coderSession,
 				agent: "coder",
-				perCallModel: "google-antigravity/gemini-4-carbon",
+				perCallModel: "openai-codex/gpt-6.2-sol",
 			}),
 		);
-		expect(carbonPolicy.modelOverride).toEqual(["google-antigravity/gemini-4-carbon"]);
+		expect(solPolicy.modelOverride).toEqual(["openai-codex/gpt-6.2-sol"]);
 
 		const sonnetPolicy = await resolveEffectiveSubagentPolicy(
 			request({

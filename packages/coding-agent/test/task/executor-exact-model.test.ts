@@ -257,10 +257,10 @@ describe("per-call exact selection after background discovery", () => {
 				} satisfies ThinkingConfig,
 			},
 		);
-		const carbon = Object.assign(
-			createMockModel({ id: "gemini-4-carbon", reasoning: true, handler: () => ({ content: ["Carbon answer."] }) }),
+		const sol = Object.assign(
+			createMockModel({ id: "gpt-6.2-sol", reasoning: true, handler: () => ({ content: ["Sol answer."] }) }),
 			{
-				provider: "google-antigravity",
+				provider: "openai-codex",
 				thinking: { mode: "effort", efforts: [Effort.Low, Effort.Medium, Effort.High] } satisfies ThinkingConfig,
 			},
 		);
@@ -275,11 +275,11 @@ describe("per-call exact selection after background discovery", () => {
 
 		const result = await runWorker({
 			model: astra,
-			extraModels: [carbon],
+			extraModels: [sol],
 			settings,
 			perCallModel: "openai-codex/gpt-6-astra:xhigh",
 			emitBeforeSubagentSpawn: async () => ({
-				model: ["google-antigravity/gemini-4-carbon:high"],
+				model: ["openai-codex/gpt-6.2-sol:high"],
 				note: "pool reroute",
 			}),
 		});
@@ -287,11 +287,11 @@ describe("per-call exact selection after background discovery", () => {
 		expect(result.output).toBe("Astra answer.");
 		expect(result.resolvedModel).toBe("openai-codex/gpt-6-astra:xhigh");
 		expect(astra.calls.map(call => call.options?.reasoning)).toEqual([Effort.XHigh]);
-		expect(carbon.calls).toHaveLength(0);
+		expect(sol.calls).toHaveLength(0);
 
 		const blocked = await runWorker({
 			model: astra,
-			extraModels: [carbon],
+			extraModels: [sol],
 			settings,
 			perCallModel: "openai-codex/gpt-6-astra:xhigh",
 			emitBeforeSubagentSpawn: async () => ({

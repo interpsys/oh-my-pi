@@ -11,7 +11,6 @@ import { scheduler } from "node:timers/promises";
 import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
 import { AnthropicMessages } from "@oh-my-pi/pi-ai/providers/anthropic-client";
 import { streamGoogle } from "@oh-my-pi/pi-ai/providers/google";
-import { streamGoogleGeminiCli } from "@oh-my-pi/pi-ai/providers/google-gemini-cli";
 import { consumeGoogleStream } from "@oh-my-pi/pi-ai/providers/google-shared";
 import type { GenerateContentResponse } from "@oh-my-pi/pi-ai/providers/google-types";
 import { streamOpenAICodexResponses } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
@@ -27,14 +26,11 @@ const { getAgentDir, setAgentDir, TempDir } = piUtils;
 
 const context: Context = { messages: [{ role: "user", content: "hi", timestamp: 1 }] };
 
-function sseResponse(events: unknown[], url?: string): Response {
-	const response = new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), {
+function sseResponse(events: unknown[]): Response {
+	return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), {
 		status: 200,
 		headers: { "content-type": "text/event-stream" },
 	});
-	// Cloud Code Assist re-reads `response.url`; synthetic Responses default it to "".
-	if (url) Object.defineProperty(response, "url", { value: url });
-	return response;
 }
 
 const originalAgentDir = getAgentDir();
@@ -136,22 +132,8 @@ describe("anthropic responseModel", () => {
 	});
 });
 
-// ─── google-gemini-cli (Antigravity): response.modelVersion ─────────────────
+// ─── Google Generative AI / Vertex (consumeGoogleStream): modelVersion ──────
 
-const ANTIGRAVITY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
-const ANTIGRAVITY_SSE_URL = `${ANTIGRAVITY_ENDPOINT}/v1internal:streamGenerateContent?alt=sse`;
-const antigravityModel: Model<"google-gemini-cli"> = buildModel({
-	id: "gemini-3-flash",
-	name: "Gemini 3 Flash (Antigravity)",
-	api: "google-gemini-cli",
-	provider: "google-antigravity",
-	baseUrl: ANTIGRAVITY_ENDPOINT,
-	reasoning: true,
-	input: ["text"],
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	contextWindow: 200_000,
-	maxTokens: 32_000,
-});
 const GEMINI_REPORTED = "gemini-3-flash-preview-11-2026";
 
 /** Top-level `GenerateContentResponse` shape (public Generative Language + Vertex). */
@@ -163,61 +145,6 @@ function genaiChunk(text: string, modelVersion?: string): Record<string, unknown
 	if (modelVersion !== undefined) chunk.modelVersion = modelVersion;
 	return chunk;
 }
-
-/** `{ response }` envelope (Cloud Code Assist: google-gemini-cli / antigravity). */
-function ccaChunk(text: string, modelVersion?: string): Record<string, unknown> {
-	return { response: genaiChunk(text, modelVersion) };
-}
-
-describe("google-gemini-cli (antigravity) responseModel", () => {
-	// Pinning the client version keeps the Antigravity manifest lookup off the injected fetch.
-	const savedAntigravityVersion = process.env.PI_AI_ANTIGRAVITY_VERSION;
-	beforeEach(() => {
-		process.env.PI_AI_ANTIGRAVITY_VERSION = "2.19.1";
-	});
-	afterEach(() => {
-		if (savedAntigravityVersion === undefined) delete process.env.PI_AI_ANTIGRAVITY_VERSION;
-		else process.env.PI_AI_ANTIGRAVITY_VERSION = savedAntigravityVersion;
-	});
-
-	async function runAntigravity(responses: Array<Record<string, unknown>>) {
-		let calls = 0;
-		const fetchMock: FetchImpl = async () => {
-			const chunk = responses[Math.min(calls, responses.length - 1)];
-			calls += 1;
-			return sseResponse([chunk], ANTIGRAVITY_SSE_URL);
-		};
-		const result = await streamGoogleGeminiCli(antigravityModel, context, {
-			apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
-			antigravityEndpointMode: "auto",
-			fetch: fetchMock,
-		}).result();
-		return { result, calls };
-	}
-
-	it("records response.modelVersion while model stays the requested id", async () => {
-		const { result } = await runAntigravity([ccaChunk("Done.", GEMINI_REPORTED)]);
-		expect(result.stopReason).toBe("stop");
-		expect(result.model).toBe("gemini-3-flash");
-		expect(result.responseModel).toBe(GEMINI_REPORTED);
-	});
-
-	it("leaves responseModel undefined when the response omits modelVersion", async () => {
-		const { result } = await runAntigravity([ccaChunk("Done.")]);
-		expect(result.stopReason).toBe("stop");
-		expect(result.model).toBe("gemini-3-flash");
-		expect(result.responseModel).toBeUndefined();
-	});
-
-	it("drops the model an empty attempt reported once the next endpoint answers", async () => {
-		const { result, calls } = await runAntigravity([ccaChunk("", GEMINI_REPORTED), ccaChunk("Done.")]);
-		expect(calls).toBe(2);
-		expect(result.stopReason).toBe("stop");
-		expect(result.responseModel).toBeUndefined();
-	});
-});
-
-// ─── Google Generative AI / Vertex (consumeGoogleStream): modelVersion ──────
 
 const genaiModel: Model<"google-generative-ai"> = buildModel({
 	id: "gemini-3-flash",
