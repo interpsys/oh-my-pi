@@ -8,9 +8,9 @@ import { compileCodingAgent } from "../scripts/compile-binary";
 const repoRoot = path.resolve(import.meta.dir, "../../..");
 
 it("distinguishes source SDK provenance from a compiled fork revision without changing semver", () => {
-	expect(BUILD_INFO).toEqual({ version: VERSION, commit: null, variant: "orb.1" });
+	expect(BUILD_INFO).toEqual({ version: VERSION, commit: null, variant: "orb.2" });
 	expect(VERSION).toBe("18.22.2");
-	expect(BUILD_VERSION).toBe("18.22.2 (orb.1 source)");
+	expect(BUILD_VERSION).toBe("18.22.2 (orb.2 source)");
 });
 
 it("embeds fork provenance independently of the runtime checkout and environment", async () => {
@@ -39,7 +39,7 @@ it("embeds fork provenance independently of the runtime checkout and environment
 	expect(JSON.parse(result.stdout.toString())).toEqual({
 		version: "18.22.2",
 		commit,
-		variant: "orb.1",
-		display: `18.22.2 (orb.1 ${commit.slice(0, 7)})`,
+		variant: "orb.2",
+		display: `18.22.2 (orb.2 ${commit.slice(0, 7)})`,
 	});
 }, 30_000);

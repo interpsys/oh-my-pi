@@ -226,7 +226,6 @@ describe("Google output continuation (Cloud Code Assist path)", () => {
 
 		expect(resumeInits).toHaveLength(CONTINUATION_MAX_ATTEMPTS);
 		expect(result.stopReason).toBe("error");
-		// The fork's byte watchdog names the silent phase instead of upstream's "timed out".
-		expect(result.errorMessage).toContain("stream silent for 50ms before the first response byte");
+		expect(result.errorMessage).toContain("timed out");
 	});
 });
