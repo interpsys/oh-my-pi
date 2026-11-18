@@ -705,7 +705,12 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 			const callerSignal = options?.signal;
 			let freshConnection = providerState?.freshConnection === true;
 			let watchdog: ByteWatchdog | undefined;
-			const fetchResponse = (url: string, body: string, maxAttempts: number): Promise<Response> =>
+			const fetchResponse = (
+				url: string,
+				body: string,
+				maxAttempts: number,
+				retryTimeouts: boolean,
+			): Promise<Response> =>
 				fetchWithRetry(url, {
 					method: "POST",
 					headers: requestHeaders,
@@ -715,8 +720,9 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					defaultDelayMs: attempt => BASE_DELAY_MS * 2 ** attempt,
 					maxDelayMs: options?.maxRetryDelayMs ?? RATE_LIMIT_BUDGET_MS,
 					timeout: false,
-					// HTTP 429/5xx and network errors retry here; a timed-out request leaves the endpoint.
-					shouldRetryError: () => !watchdog?.timedOut,
+					// HTTP 429/5xx and network errors retry here; a timed-out request leaves the
+					// endpoint unless it is a continuation resume.
+					shouldRetryError: () => retryTimeouts || !watchdog?.timedOut,
 					fetch: (input, init) => {
 						watchdog?.clear();
 						watchdog = armByteWatchdog(callerSignal, firstEventTimeoutMs, idleTimeoutMs);
@@ -901,6 +907,8 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				};
 				// Each resume is its own physical request: fetchResponse re-arms the byte
 				// watchdog per attempt, and the segment reads under that watchdog's signal.
+				// A resume carries a continuation token, not the original prompt, so a
+				// stalled one retries: failing it would discard every streamed segment.
 				// The byte observer runs before SSE framing, so thinking, comments and
 				// partial JSON keep the transport alive without visible output.
 				const resumeSegment = async (continuationToken: string) => {
@@ -908,6 +916,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 						streamUrl,
 						JSON.stringify({ ...requestBody, request: { ...requestBody.request, continuationToken } }),
 						CONTINUATION_MAX_ATTEMPTS,
+						true,
 					);
 					if (!resumed.ok || !resumed.body) {
 						const errorText = await resumed.text();
@@ -1090,7 +1099,12 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					started = false;
 					resetOutput();
 
-					const response = await fetchResponse(streamUrl, requestBodyJson, isLastEndpoint ? MAX_RETRIES + 1 : 1);
+					const response = await fetchResponse(
+						streamUrl,
+						requestBodyJson,
+						isLastEndpoint ? MAX_RETRIES + 1 : 1,
+						false,
+					);
 
 					if (!response.ok) {
 						if (AIError.isTransientStatus(response.status)) {

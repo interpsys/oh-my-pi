@@ -753,7 +753,6 @@ describe("Command Code provider support", () => {
 					"claude-fable-5-2",
 					"claude-haiku-5-5",
 					"gpt-6.1-sol",
-					"gpt-6.1-terra",
 					"meta/muse-ember",
 					"minimax/minimax-m3.1-flash",
 				],
@@ -774,7 +773,8 @@ describe("Command Code provider support", () => {
 				efforts: [Effort.Low, Effort.Medium, Effort.High],
 			},
 			{
-				ids: ["meta/muse-wonder-1.0", "stealth/glyph-cluster:free"],
+				// Terra tops out at xhigh (orb fork policy, `thinking-max-effort`).
+				ids: ["gpt-6.1-terra", "meta/muse-wonder-1.0", "stealth/glyph-cluster:free"],
 				efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 			},
 			{ ids: ["Qwen/Qwen3.8-Max-Prime"], efforts: [Effort.Low, Effort.Medium, Effort.XHigh] },
